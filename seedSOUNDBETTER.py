@@ -80,13 +80,17 @@ def mat2mne(file_name,active):
 
 
 #%% Test the function and plot the corresponding evoked data
-# 
-#epochs, y = mat2mne(datapath + os.path.join('Subject_01_Active','data_ref.mat'),1)
-#evoked = epochs.average(picks=None,method='mean',by_event_type=True)
-#
-## plot
-#for ev in evoked : 
-#    ev.pick('Cz').plot(titles='SNR '+ev.comment)
+def  plot_mat2mne_evokeds():
+    plot = True
+
+    if plot :
+    
+        epochs, y = mat2mne(datapath + os.path.join('Subject_01_Active','data_ref.mat'),1)
+        evoked = epochs.average(picks=None,method='mean',by_event_type=True)
+    
+        # plot
+        for ev in evoked : 
+            ev.pick('Cz').plot(titles='SNR '+ev.comment)
 
 
 #%%
