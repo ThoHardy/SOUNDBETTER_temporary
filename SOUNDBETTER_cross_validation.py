@@ -78,11 +78,11 @@ plt.legend()
 plt.show()
 
 '''
-aud_thresh=[3] #+ [4,5,6,7,8,9]
+aud_thresh=[0,1,2,3] #+ [4,5,6,7,8,9]
 list_avg_powers, list_std_powers = {thresh:[] for thresh in aud_thresh}, {thresh:[] for thresh in aud_thresh}
 for time in np.linspace(100,890,80):
     
-    TWOI = [(int(time),int(time+10))] #+ [(350,360),(400,410),(450,460)]
+    TWOI = [(int(time),int(time+10))] + [(350,360),(500,510)]
     print('process ', TWOI)
                 
     list_SubIDs=[i for i in range(20)]
@@ -111,9 +111,9 @@ list_avg_powers = {thresh:np.array(list_avg_powers[thresh]).T for thresh in aud_
 list_sem_powers = {thresh:np.array(list_std_powers[thresh]).T for thresh in aud_thresh}
 
 plt.figure()
-plt.title('Real predictibility with 1D EM on SNR -7 as a function of time')
+plt.title('Real predictibility with 3D EM on SNR -7, on (200,500,time), as a function of time')
 for thresh in aud_thresh :
-    plt.errorbar(2*np.linspace(100,890,80)-500,list_avg_powers[thresh][1],list_sem_powers[thresh][1],label=str(thresh)+'ideal predictability')
+    #plt.errorbar(2*np.linspace(100,890,80)-500,list_avg_powers[thresh][1],list_sem_powers[thresh][1],label=str(thresh)+'ideal predictability')
     plt.errorbar(2*np.linspace(100,890,80)-500,list_avg_powers[thresh][0],list_sem_powers[thresh][0],label=str(thresh)+'real_predictibility')
 plt.legend()
 plt.show()
