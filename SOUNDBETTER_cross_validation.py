@@ -78,39 +78,43 @@ plt.legend()
 plt.show()
 
 '''
-list_avg_powers, list_std_powers = [], []
+aud_thresh=[3] #+ [4,5,6,7,8,9]
+list_avg_powers, list_std_powers = {thresh:[] for thresh in aud_thresh}, {thresh:[] for thresh in aud_thresh}
 for time in np.linspace(100,890,80):
     
     TWOI = [(int(time),int(time+10))] #+ [(350,360),(400,410),(450,460)]
     print('process ', TWOI)
                 
-    list_SubIDs_minus22=[i for i in range(16)]+[i for i in range(17,20)]
     list_SubIDs=[i for i in range(20)]
     #cv = CV5_GaussianMixture00_Simul(bimodal=True,multfactor_std=1,list_SubIDs=list_SubIDs, snr=-7, TWOI=TWOI,save=False, redo=True)
-    cv = CV5_GaussianMixture00(list_SubIDs=list_SubIDs, snr=-9, TWOI=TWOI, nb_iterations=1,save=False, redo=True)
+    cv = CV5_GaussianMixture00(list_SubIDs=list_SubIDs, snr=-7, TWOI=TWOI, nb_iterations=1,aud_thresh=aud_thresh,save=False, redo=True)
     
-    predictibility_powers, ideal_predictibility_powers = [], []
+    predictibility_powers, ideal_predictibility_powers = {thresh:[] for thresh in aud_thresh}, {thresh:[] for thresh in aud_thresh}
     for result in cv :
         if result == 'NaN':
             continue
-        if np.mean(result['full_data_parameters'][1]) < np.mean(result['full_data_parameters'][3]) :
-            predictibility_powers.append(np.mean(result['full_data_correct_prediction']))
-            ideal_predictibility_powers.append(np.mean(result['full_data_ideal_prediction']))
+        if np.mean(result['full_data_parameters'][1]) < np.mean(result['full_data_parameters'][3]) : #check mu_low < mu_high
+            for thresh in aud_thresh : 
+                predictibility_powers[thresh].append(np.mean(result['full_data_correct_prediction'][thresh]))
+                ideal_predictibility_powers[thresh].append(np.mean(result['full_data_ideal_prediction'][thresh]))
         else :
-            predictibility_powers.append(1-np.mean(result['full_data_correct_prediction']))
-            ideal_predictibility_powers.append(1-np.mean(result['full_data_ideal_prediction']))
-    list_avg_powers.append([np.mean(predictibility_powers),np.mean(ideal_predictibility_powers)])
-    list_std_powers.append([np.std(predictibility_powers),np.std(ideal_predictibility_powers)])
-    print('average power : ',np.mean(predictibility_powers),'\n')
-    print('average ideal power : ',np.mean(ideal_predictibility_powers))
+            for thresh in aud_thresh : 
+                predictibility_powers[thresh].append(1-np.mean(result['full_data_correct_prediction'][thresh]))
+                ideal_predictibility_powers[thresh].append(1-np.mean(result['full_data_ideal_prediction'][thresh]))
+    for thresh in aud_thresh :
+        list_avg_powers[thresh].append([np.mean(predictibility_powers[thresh]),np.mean(ideal_predictibility_powers[thresh])])
+        list_std_powers[thresh].append([np.std(predictibility_powers[thresh])/np.sqrt(20),np.std(ideal_predictibility_powers[thresh])/np.sqrt(20)])
+    print('average power : ',{thresh:np.mean(predictibility_powers[thresh]) for thresh in aud_thresh},'\n')
+    print('average ideal power : ',{thresh:np.mean(ideal_predictibility_powers[thresh]) for thresh in aud_thresh})
     
-list_avg_powers = np.array(list_avg_powers).T
-list_std_powers = np.array(list_std_powers).T
+list_avg_powers = {thresh:np.array(list_avg_powers[thresh]).T for thresh in aud_thresh}
+list_sem_powers = {thresh:np.array(list_std_powers[thresh]).T for thresh in aud_thresh}
 
 plt.figure()
-plt.title('Real and ideal predictibility with 4D EM on SNR -9, on (200,300,400,time) as a function of time')
-plt.errorbar(2*np.linspace(100,890,80)-500,list_avg_powers[1],list_std_powers[1],label='ideal_predictibility')
-plt.errorbar(2*np.linspace(100,890,80)-500,list_avg_powers[0],list_std_powers[0],label='real_predictibility')
+plt.title('Real predictibility with 1D EM on SNR -7 as a function of time')
+for thresh in aud_thresh :
+    plt.errorbar(2*np.linspace(100,890,80)-500,list_avg_powers[thresh][1],list_sem_powers[thresh][1],label=str(thresh)+'ideal predictability')
+    plt.errorbar(2*np.linspace(100,890,80)-500,list_avg_powers[thresh][0],list_sem_powers[thresh][0],label=str(thresh)+'real_predictibility')
 plt.legend()
 plt.show()
 
