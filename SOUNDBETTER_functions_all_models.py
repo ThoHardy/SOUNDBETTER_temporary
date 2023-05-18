@@ -2118,7 +2118,7 @@ def test_GaussianMixture00(data,parameters):
     return(neg_LL, average_likelihood)
 
 
-def Predict_GaussianMixture00(list_SubIDs, snr, TWOI, nb_iterations=5, cv5=False, save=False, redo=False):
+def Predict_GaussianMixture00_OldVersion(list_SubIDs, snr, TWOI, nb_iterations=5, cv5=False, save=False, redo=False):
     
     '''
     Parameters
@@ -2287,6 +2287,211 @@ def Predict_GaussianMixture00(list_SubIDs, snr, TWOI, nb_iterations=5, cv5=False
                     GaussianMixture00_results_this_sub['full_data_ideal_prediction'].append(1)
                 else :
                     GaussianMixture00_results_this_sub['full_data_ideal_prediction'].append(0)
+            
+            # save the results for this subject
+            if save :
+                
+                # average the test_LLH to obtain the model's average LLH
+                GaussianMixture00_results_this_sub['GaussianMixture00_LLH'] = np.mean(GaussianMixture00_results_this_sub['testLLH'])
+                
+                os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
+    
+                matfile = {}
+                for key in GaussianMixture00_results_this_sub.keys():
+                    matfile[key] = np.array(GaussianMixture00_results_this_sub[key])
+                scipy.io.savemat('Model9_Twind_5cv_active_filtered_10Hz_S'+realSubIDs[SubID]+'.mat', matfile)
+                
+                os.chdir(datapath)
+            
+            GaussianMixture00_results.append(GaussianMixture00_results_this_sub)
+            
+        except ValueError :
+            
+            print('ValueError with S'+realSubIDs[SubID])
+            
+            GaussianMixture00_results.append('NaN')
+        
+    return(GaussianMixture00_results)
+
+
+def Predict_GaussianMixture00(list_SubIDs, snr, TWOI, nb_iterations=5, aud_thresh=[2],cv5=False, save=False, redo=False):
+    
+    '''
+    Parameters
+    ----------
+    list_SubIDs : LIST of INT. Indexes of the subjects in realSubIDs (so between 0 and 19).
+    snr : negative INT
+    TWOI : LIST of [2-TUPLE of INT]
+    nb_iterations : INT, nb of times the fiting is done for each set of data (with only the best result kept at the end)
+    aud_thresh : LIST of INT. Auditivity thresholds you want to test.
+    save :BOOL , optional. If True, save the results.
+
+    Returns
+    -------
+    Bifurcation00_results : LIST of DICT. Results of the CV5 for each subject.
+
+    '''
+    # get data
+    datapath = seedSOUNDBETTER.datapath
+    os.chdir(datapath)
+    file_name = os.path.join('Subject_All_Active',
+                             'classif_SingleTrialPred_vowelpresence_train_maxSNR_test_allSNR_active_20_subjects')
+    classif = scipy.io.loadmat(file_name)
+    preds, conds = classif['preds'][0], classif['conds'][0]
+    
+    parameters_names = ['best_beta','best_mu_low','best_sigma_low','best_mu_high','best_sigma_high']
+    
+    # initiate output
+    GaussianMixture00_results = []
+    
+    # create the training and testing blocks
+    list_of_blocks_train = [np.linspace(5,20,16),
+                      np.concatenate((np.linspace(1,4,4),np.linspace(9,20,12))),
+                      np.concatenate((np.linspace(1,8,8),np.linspace(13,20,8))),
+                      np.concatenate((np.linspace(1,12,12),np.linspace(17,20,4))),
+                      np.linspace(1,16,16)]
+    list_of_blocks_test = [np.linspace(1,4,4),np.linspace(5,8,4),np.linspace(9,12,4),
+                           np.linspace(13,16,4),np.linspace(17,20,4)]
+    
+    for SubID in list_SubIDs:
+        
+        try : 
+        
+            # Check if it has been done already
+            os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
+            if os.path.exists('Model9_Twind_5cv_active_filtered_10Hz_S'+realSubIDs[SubID]+'.mat')==1 and redo==0:
+                print('\n Sub'+realSubIDs[SubID]+' already done \n')
+                continue
+            os.chdir(datapath)
+            
+            print('\n Start Sub'+realSubIDs[SubID]+'\n')
+            
+            GaussianMixture00_results_this_sub = {para:[] for para in parameters_names}
+            GaussianMixture00_results_this_sub['time'] = list(range(-500,2000,2))
+            GaussianMixture00_results_this_sub['lowpassc'] = 10
+            GaussianMixture00_results_this_sub['TWOI'] = TWOI
+            GaussianMixture00_results_this_sub['exitflags'] = []
+            GaussianMixture00_results_this_sub['trainLLH'] = []
+            GaussianMixture00_results_this_sub['testLLH'] = []
+            
+            preds_this_sub, conds_this_sub = preds[SubID], conds[SubID]
+            
+            ## cross-validation if asked
+            if cv5 :
+                for iblocks in range(5):
+                    
+                    blocks_train = list_of_blocks_train[iblocks]
+                    blocks_test = list_of_blocks_test[iblocks]
+                    
+                    data_list, data_high, data_low = [], [], []
+                    for times in TWOI:
+                        data_this_time = EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks_train)
+                        data_list.append(data_this_time[snr])
+                        data_high.append(data_this_time[-5])
+                        data_low.append(data_this_time[-20])
+                    data = np.array(data_list).T # transpose so that each row is one subject at all the timepoints
+                    data_high = np.array(data_high).T
+                    data_low = np.array(data_low).T
+                    
+                    # compute initial parameters
+                    mu_low_guess, mu_high_guess = np.mean(data_low,0), np.mean(data_high,0)
+                    sigma_low_guess, sigma_high_guess = np.cov(data_low.T), np.cov(data_high.T)
+                    if snr == -9 :
+                        beta_guess = 0.5
+                    else :
+                        beta_guess = 0.75
+                
+                    iparameters = np.array([beta_guess, mu_low_guess,sigma_low_guess,  mu_high_guess, sigma_high_guess])
+                    
+                    # train the model
+                    try :
+                        success, HSP_list, parameters, LL = fit_GaussianMixture00(data,iparameters,maxiter=200*len(iparameters))
+                    except TypeError :
+                        continue
+                    GaussianMixture00_results_this_sub['trainLLH'].append(LL)
+                    GaussianMixture00_results_this_sub['exitflags'].append(success)
+                    for ind_para, para in enumerate(parameters_names):
+                        GaussianMixture00_results_this_sub[para].append(parameters[ind_para])
+                    print(success, parameters)
+                    print('\n log-likelihood on training set : ', LL) # np.exp(-fun/nb_points))
+                    
+                    # test the model
+                    data_test = EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks_test)
+                    try :
+                        fun_test, avg_lh = test_GaussianMixture00(data_test,parameters)
+                    except TypeError :
+                        continue
+                    GaussianMixture00_results_this_sub['testLLH'].append(fun_test)
+                    print('\n log-likelihood for testing set : ', fun_test, '\n' )
+                    
+            ## state-prediction on full data
+            # real audibility to compare with true state
+            snr_to_ind = {-20:1, -13:2, -11:3, -9:4, -7:5, -5:6, -3:7}
+            conds_this_snr = conds_this_sub[conds_this_sub.T[4]==snr_to_ind[snr]] # choose just the good snr (4 -> snr-9, 5 -> -7)!!!!
+            real_audibility = conds_this_snr.T[0][conds_this_snr.T[1]<21] # remove blocks > 20
+            # gather data
+            all_data = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=np.linspace(1,20,20))[snr] for times in TWOI]).T
+            all_data_low = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=np.linspace(1,20,20))[-20] for times in TWOI]).T
+            all_data_high = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=np.linspace(1,20,20))[-5] for times in TWOI]).T
+            # initial parameters
+            mu_low_guess, mu_high_guess = np.mean(all_data_low,0), np.mean(all_data_high,0)
+            sigma_low_guess, sigma_high_guess = np.cov(all_data_low.T), np.cov(all_data_high.T)
+            beta_guess = 0.75
+            iparameters = [beta_guess,mu_low_guess,sigma_low_guess,mu_high_guess,sigma_low_guess]
+            #iparameters = [np.random.normal(beta_guess,0.1),[np.random.normal(mu,0.1) for mu in mu_low_guess],sigma_low_guess,[np.random.normal(mu,0.1) for mu in mu_high_guess],sigma_high_guess]
+            # train and find HSP_list
+            try :
+                success, HSP_list, parameters, LL = fit_GaussianMixture00(all_data,iparameters,maxiter=200*len(iparameters))
+            except TypeError :
+                success, HSP_list, parameters, LL = None, None, None, None, None
+            for nb_it in range(nb_iterations-1):
+                try :
+                    try_iparameters = [np.random.normal(param,0.1) for param in iparameters]
+                    try_success, try_HSP_list, try_parameters, try_LL = fit_GaussianMixture00(all_data,try_iparameters,maxiter=200*len(iparameters))
+                    if LL == None :
+                        success, HSP_list, parameters, LL = try_success, try_HSP_list, try_parameters, try_LL
+                    elif try_LL > LL :
+                        success, HSP_list, parameters, LL = try_success, try_HSP_list, try_parameters, try_LL
+                except TypeError :
+                    continue
+            if LL == None :
+                print('not working for this sub')
+                continue
+                
+            # add tot the output
+            GaussianMixture00_results_this_sub['full_data_LLH'] = [LL]
+            GaussianMixture00_results_this_sub['full_data_parameters'] = parameters
+            GaussianMixture00_results_this_sub['full_data_HSP_list'] = HSP_list
+            GaussianMixture00_results_this_sub['full_data_exitflag'] = [success]
+            GaussianMixture00_results_this_sub['full_data_correct_prediction'] = {thresh:[] for thresh in aud_thresh}
+            for ind_activity, hsp in enumerate(HSP_list) :
+                for thresh in aud_thresh :
+                    if (hsp >= 0.5 and real_audibility[ind_activity] >= thresh) or (hsp < 0.5 and real_audibility[ind_activity] < thresh) :
+                        GaussianMixture00_results_this_sub['full_data_correct_prediction'][thresh].append(1)
+                    else :
+                        GaussianMixture00_results_this_sub['full_data_correct_prediction'][thresh].append(0)
+            # also add the parameters of the real distributions
+            data_real_high = {thresh:all_data[real_audibility>thresh] for thresh in aud_thresh}
+            data_real_low = {thresh:all_data[real_audibility<=thresh] for thresh in aud_thresh}
+            real_beta = {thresh:len(data_real_high[thresh])/len(all_data) for thresh in aud_thresh}
+            real_mu_high, real_mu_low = {thresh:np.mean(data_real_high[thresh],0) for thresh in aud_thresh}, {thresh:np.mean(data_real_low[thresh],0) for thresh in aud_thresh}
+            real_sigma_high, real_sigma_low = {thresh:np.cov(data_real_high[thresh].T) for thresh in aud_thresh}, {thresh:np.cov(data_real_high[thresh].T) for thresh in aud_thresh}
+            GaussianMixture00_results_this_sub['full_data_real_parameters'] = {thresh:[real_beta[thresh], real_mu_high[thresh], real_sigma_high[thresh], real_mu_low[thresh], real_sigma_low[thresh]] for thresh in aud_thresh}
+            real_HSP_list = {thresh:[] for thresh in aud_thresh} # HSP list given by the real values of the parameters
+            for ind, activity in enumerate(all_data):
+                for thresh in aud_thresh :
+                    try :
+                        a, b = multivariate_normal.pdf(activity,real_mu_high[thresh],real_sigma_high[thresh]), multivariate_normal.pdf(activity,real_mu_low[thresh],real_sigma_low[thresh])
+                    except : # if singular covariance matrix
+                        a, b = multivariate_normal.pdf(activity,real_mu_high[thresh],real_sigma_high[thresh],allow_singular=True), multivariate_normal.pdf(activity,real_mu_low[thresh],real_sigma_low[thresh],allow_singular=True)
+                    real_HSP_list[thresh].append(real_beta[thresh]*a/(real_beta[thresh]*a + (1-real_beta[thresh])*b))
+            GaussianMixture00_results_this_sub['full_data_ideal_prediction'] = {thresh:[] for thresh in aud_thresh}
+            for thresh in aud_thresh :
+                for ind_activity, hsp in enumerate(real_HSP_list[thresh]) :
+                    if (hsp >= 0.5 and real_audibility[ind_activity] >= thresh) or (hsp < 0.5 and real_audibility[ind_activity] < thresh) :
+                        GaussianMixture00_results_this_sub['full_data_ideal_prediction'][thresh].append(1)
+                    else :
+                        GaussianMixture00_results_this_sub['full_data_ideal_prediction'][thresh].append(0)
             
             # save the results for this subject
             if save :
