@@ -2314,7 +2314,7 @@ def Predict_GaussianMixture00_OldVersion(list_SubIDs, snr, TWOI, nb_iterations=5
     return(GaussianMixture00_results)
 
 
-def Predict_GaussianMixture00(list_SubIDs, snr, TWOI, nb_iterations=5, aud_thresh=[2],cv5=False, save=False, redo=False):
+def Predict_GaussianMixture00(list_SubIDs, snr, TWOI, nb_iterations=5, aud_thresh=[3],cv5=False, save=False, redo=False):
     
     '''
     Parameters
@@ -2471,8 +2471,8 @@ def Predict_GaussianMixture00(list_SubIDs, snr, TWOI, nb_iterations=5, aud_thres
                     else :
                         GaussianMixture00_results_this_sub['full_data_correct_prediction'][thresh].append(0)
             # also add the parameters of the real distributions
-            data_real_high = {thresh:all_data[real_audibility>thresh] for thresh in aud_thresh}
-            data_real_low = {thresh:all_data[real_audibility<=thresh] for thresh in aud_thresh}
+            data_real_high = {thresh:all_data[real_audibility>=thresh] for thresh in aud_thresh}
+            data_real_low = {thresh:all_data[real_audibility<thresh] for thresh in aud_thresh}
             real_beta = {thresh:len(data_real_high[thresh])/len(all_data) for thresh in aud_thresh}
             real_mu_high, real_mu_low = {thresh:np.mean(data_real_high[thresh],0) for thresh in aud_thresh}, {thresh:np.mean(data_real_low[thresh],0) for thresh in aud_thresh}
             real_sigma_high, real_sigma_low = {thresh:np.cov(data_real_high[thresh].T) for thresh in aud_thresh}, {thresh:np.cov(data_real_high[thresh].T) for thresh in aud_thresh}
@@ -2480,11 +2480,14 @@ def Predict_GaussianMixture00(list_SubIDs, snr, TWOI, nb_iterations=5, aud_thres
             real_HSP_list = {thresh:[] for thresh in aud_thresh} # HSP list given by the real values of the parameters
             for ind, activity in enumerate(all_data):
                 for thresh in aud_thresh :
-                    try :
-                        a, b = multivariate_normal.pdf(activity,real_mu_high[thresh],real_sigma_high[thresh]), multivariate_normal.pdf(activity,real_mu_low[thresh],real_sigma_low[thresh])
-                    except : # if singular covariance matrix
-                        a, b = multivariate_normal.pdf(activity,real_mu_high[thresh],real_sigma_high[thresh],allow_singular=True), multivariate_normal.pdf(activity,real_mu_low[thresh],real_sigma_low[thresh],allow_singular=True)
-                    real_HSP_list[thresh].append(real_beta[thresh]*a/(real_beta[thresh]*a + (1-real_beta[thresh])*b))
+                    try : 
+                        try :
+                            a, b = multivariate_normal.pdf(activity,real_mu_high[thresh],real_sigma_high[thresh]), multivariate_normal.pdf(activity,real_mu_low[thresh],real_sigma_low[thresh])
+                        except : # if singular covariance matrix
+                            a, b = multivariate_normal.pdf(activity,real_mu_high[thresh],real_sigma_high[thresh],allow_singular=True), multivariate_normal.pdf(activity,real_mu_low[thresh],real_sigma_low[thresh],allow_singular=True)
+                        real_HSP_list[thresh].append(real_beta[thresh]*a/(real_beta[thresh]*a + (1-real_beta[thresh])*b))
+                    except : 
+                        print('Issue for thresh '+str(thresh)+', S'+realSubIDs[SubID]+'\n',all)
             GaussianMixture00_results_this_sub['full_data_ideal_prediction'] = {thresh:[] for thresh in aud_thresh}
             for thresh in aud_thresh :
                 for ind_activity, hsp in enumerate(real_HSP_list[thresh]) :
