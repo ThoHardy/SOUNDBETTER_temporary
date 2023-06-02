@@ -30,6 +30,7 @@ datapath = seedSOUNDBETTER.datapath
 os.chdir(datapath)
 
 mat2mne = seedSOUNDBETTER.mat2mne
+ustat = seedSOUNDBETTER.ustat
 
 
 
@@ -2057,7 +2058,7 @@ def fit_GaussianMixture00(data,iparameters,maxiter=2000):
         
         # assess convergence
         if len(LLs) > 1 :
-            if abs(LLs[-2] - LLs[-1]) < 1:
+            if abs(LLs[-2] - LLs[-1]) < 0.1:
                 convergence += 1
             else :
                 convergence = 0
@@ -2524,7 +2525,7 @@ def Predict_GaussianMixture00(list_SubIDs, snr, TWOI, nb_iterations=5, aud_thres
     return(GaussianMixture00_results)
 
 
-def Predict_GaussianMixture00_Sklearn(list_SubIDs, snr, TWOI, nb_iterations=5, aud_thresh=[3],cv5=False, save=False, redo=False):
+def Predict_GaussianMixture00_Sklearn(list_SubIDs, snr, TWOI, nb_iterations=1, aud_thresh=[3],cv5=False, save=False, redo=False):
     
     '''
     Parameters
@@ -2562,7 +2563,7 @@ def Predict_GaussianMixture00_Sklearn(list_SubIDs, snr, TWOI, nb_iterations=5, a
         
         # Check if it has been done already
         os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
-        if os.path.exists('Model9_Twind_5cv_active_filtered_10Hz_S'+realSubIDs[SubID]+'.mat')==1 and redo==0:
+        if os.path.exists('Model9_Twind_active_filtered_10Hz_S'+realSubIDs[SubID]+'.mat')==1 and redo==0:
             print('\n Sub'+realSubIDs[SubID]+' already done \n')
             continue
         os.chdir(datapath)
@@ -2579,29 +2580,74 @@ def Predict_GaussianMixture00_Sklearn(list_SubIDs, snr, TWOI, nb_iterations=5, a
         real_audibility = conds_this_snr.T[0][conds_this_snr.T[1]<21] # remove blocks > 20
         # gather activity data
         all_data = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=np.linspace(1,20,20))[snr] for times in TWOI]).T
+        all_data_low = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=np.linspace(1,20,20))[-20] for times in TWOI]).T
+        all_data_high = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=np.linspace(1,20,20))[-5] for times in TWOI]).T
+        # initial parameters
+        mu_low_guess, mu_high_guess = np.mean(all_data_low,0), np.mean(all_data_high,0)
+        sigma_low_guess, sigma_high_guess = np.cov(all_data_low.T), np.cov(all_data_high.T)
+        if len(TWOI)==1:
+            precision_low_guess, precision_high_guess = [[1/sigma_low_guess]],[[1/sigma_high_guess]]
+        else :
+            try :
+                precision_low_guess, precision_high_guess = np.linalg.inv(sigma_low_guess),np.linalg.inv(sigma_high_guess)
+            except :
+                precision_low_guess, precision_high_guess = np.linalg.pinv(sigma_low_guess),np.linalg.pinv(sigma_high_guess)
+        beta_guess = 0.75
         
         # check the hyperparameters
         param_grid = {"n_components": range(1, 5),"covariance_type": ["tied","full"],}
         grid_search = GridSearchCV(GaussianMixture(), param_grid=param_grid, scoring=gmm_bic_score)
         grid_search.fit(all_data)
         GaussianMixture00_results_this_sub['best_hyperparams'] = grid_search.best_params_
-        print('\n nb of mixtures for S'+realSubIDs[SubID]+' : ',grid_search.best_params_['n_components'])
+        print('BIC-deduced nb of mixtures for S'+realSubIDs[SubID]+' : ',grid_search.best_params_['n_components'])
         
         # fit with hyperparameters (2,'full')
-        GMM = GaussianMixture(n_components=2, covariance_type='full')
+        GMM = GaussianMixture(n_components=2, covariance_type='full', n_init=nb_iterations,
+                              means_init=[mu_high_guess,mu_low_guess],
+                              weights_init=[beta_guess,1-beta_guess],
+                              precisions_init=[precision_high_guess,precision_low_guess])
         GMM.fit(all_data)
         predictions = GMM.predict(all_data)
+        if np.mean(GMM.means_[0]) < np.mean(GMM.means_[1]) :
+            GaussianMixture00_results_this_sub['means'] = GMM.means_
+            GaussianMixture00_results_this_sub['covariances'] = GMM.covariances_
+        else : 
+            GaussianMixture00_results_this_sub['means'] = [GMM.means_[1],GMM.means_[0]]
+            GaussianMixture00_results_this_sub['covariances'] = [GMM.covariances_[1],GMM.covariances_[0]]
+            predictions = [1-p for p in predictions]
         GaussianMixture00_results_this_sub['predictions'] = predictions
+        
+        
+        # compute AUC and p-value for these predictions, based on the real audibility ratings (H0 : the medians of the two subdistributions are the same)
+        sub_populations = {0:[], 1:[]}
+        for ind_pred, pred in enumerate(predictions):
+            sub_populations[pred].append(real_audibility[ind_pred])
+        u, p_value = ustat(sub_populations[0],sub_populations[1])
+        GaussianMixture00_results_this_sub['AUC'] = u
+        if p_value == None :
+            GaussianMixture00_results_this_sub['p_value'] = 'None'
+        else : 
+            GaussianMixture00_results_this_sub['p_value'] = p_value
         
         # fill-in the correct predictions
         GaussianMixture00_results_this_sub['correct_actual_predictions'] = {thresh:[] for thresh in aud_thresh}
         for ind_activity, p in enumerate(predictions) :
             for thresh in aud_thresh :
                 if (p==1 and real_audibility[ind_activity] >= thresh) or (p==0 and real_audibility[ind_activity] < thresh) :
-                    GaussianMixture00_results_this_sub['correct_actual_prediction'][thresh].append(1)
+                    GaussianMixture00_results_this_sub['correct_actual_predictions'][thresh].append(1)
                 else :
-                    GaussianMixture00_results_this_sub['correct_actual_prediction'][thresh].append(0)
-                    
+                    GaussianMixture00_results_this_sub['correct_actual_predictions'][thresh].append(0)
+        
+        # fill-in the correct predictions for separated categories
+        GaussianMixture00_results_this_sub['correct_actual_predictions_heard'] = {thresh:[] for thresh in aud_thresh}
+        GaussianMixture00_results_this_sub['correct_actual_predictions_not_heard'] = {thresh:[] for thresh in aud_thresh}
+        for ind_activity, p in enumerate(predictions) :
+            for thresh in aud_thresh :
+                if real_audibility[ind_activity] < thresh : # not heard, so we want p=0
+                    GaussianMixture00_results_this_sub['correct_actual_predictions_not_heard'][thresh].append(1-p)
+                else : # heard, so we want p=1
+                    GaussianMixture00_results_this_sub['correct_actual_predictions_heard'][thresh].append(p)
+                
         # also add the parameters of the real distributions and the ideal predictions
         data_real_high = {thresh:all_data[real_audibility>=thresh] for thresh in aud_thresh}
         data_real_low = {thresh:all_data[real_audibility<thresh] for thresh in aud_thresh}
@@ -2620,13 +2666,158 @@ def Predict_GaussianMixture00_Sklearn(list_SubIDs, snr, TWOI, nb_iterations=5, a
                     real_HSP_list[thresh].append(real_beta[thresh]*a/(real_beta[thresh]*a + (1-real_beta[thresh])*b))
                 except : 
                     print('Issue for thresh '+str(thresh)+', S'+realSubIDs[SubID]+'\n',all)
-        GaussianMixture00_results_this_sub['correct_ideal_prediction'] = {thresh:[] for thresh in aud_thresh}
+        GaussianMixture00_results_this_sub['correct_ideal_predictions'] = {thresh:[] for thresh in aud_thresh}
         for thresh in aud_thresh :
             for ind_activity, hsp in enumerate(real_HSP_list[thresh]) :
                 if (hsp >= 0.5 and real_audibility[ind_activity] >= thresh) or (hsp < 0.5 and real_audibility[ind_activity] < thresh) :
-                    GaussianMixture00_results_this_sub['correct_ideal_prediction'][thresh].append(1)
+                    GaussianMixture00_results_this_sub['correct_ideal_predictions'][thresh].append(1)
                 else :
-                    GaussianMixture00_results_this_sub['correct_ideal_prediction'][thresh].append(0)
+                    GaussianMixture00_results_this_sub['correct_ideal_predictions'][thresh].append(0)
+        
+        # save the results for this subject
+        if save :
+            
+            os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
+
+            matfile = {}
+            for key in GaussianMixture00_results_this_sub.keys(): 
+                matfile[key] = np.array(GaussianMixture00_results_this_sub[key])
+            scipy.io.savemat('Model9_Twind_active_filtered_10Hz_S'+realSubIDs[SubID]+'.mat', matfile)
+            
+            os.chdir(datapath)
+        
+        GaussianMixture00_results.append(GaussianMixture00_results_this_sub)
+        
+    return(GaussianMixture00_results)
+
+
+def Predict_GaussianMixture00_MultiChan(list_chans,list_SubIDs, snr, TWOI, nb_iterations=1, aud_thresh=[3],cv5=False, save=False, redo=False):
+    
+    '''
+    Parameters
+    ----------
+    list_SubIDs : LIST of INT. Indexes of the subjects in realSubIDs (so between 0 and 19).
+    snr : negative INT
+    TWOI : LIST of [2-TUPLE of INT]
+    nb_iterations : INT, nb of times the fiting is done for each set of data (with only the best result kept at the end)
+    aud_thresh : LIST of INT. Auditivity thresholds you want to test.
+    save :BOOL , optional. If True, save the results.
+
+    Returns
+    -------
+    Bifurcation00_results : LIST of DICT. Results of the CV5 for each subject.
+
+    '''
+    
+    # useful objects for the rest of the function
+    snr_to_ind = {-20:1, -13:2, -11:3, -9:4, -7:5, -5:6, -3:7}
+    
+    # check arguments
+    if not(snr in(snr_to_ind.keys())):
+        raise ValueError('SNR value not allowed')
+    if len(TWOI) > 1:
+        raise ValueError('No more than 1 timepoint for this version !')
+    
+    # initiate output
+    GaussianMixture00_results = []
+    
+    # function that will be used to fit the model
+    def gmm_bic_score(estimator, X):
+        """Callable to pass to GridSearchCV that will use the BIC score."""
+        # Make it negative since GridSearchCV expects a score to maximize
+        return(-estimator.bic(X))
+    
+    for SubID in list_SubIDs:
+        
+        # Check if it has been done already
+        os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
+        if os.path.exists('Model9_MultiChan_Twind_active_filtered_10Hz_S'+realSubIDs[SubID]+'.mat')==1 and redo==0:
+            print('\n Sub'+realSubIDs[SubID]+' already done \n')
+            continue
+        os.chdir(datapath)
+        
+        print('\n Start Sub'+realSubIDs[SubID]+'\n')
+        
+        # initialize output
+        GaussianMixture00_results_this_sub = {}
+        
+        # gather data
+        data_ref = datapath + '/Subject_' + realSubIDs[SubID] + '_Active/data_ref.mat'
+        myEpoch = mat2mne(data_ref, True)['blocknumber < 21'].pick(list_chans) # remove blocks > 20
+        snrEpoch = myEpoch['snr == ' + str(snr_to_ind[snr])]
+        all_data, audibility = snrEpoch._data, snrEpoch._metadata['audibility']
+        all_data_low, all_data_high = myEpoch['snr == 1']._data, myEpoch['snr == 6']._data
+        # build (n_chans,n_trials,n_timepoints) arrays of the data of interest 
+        all_data = np.mean(all_data[:,:,range(TWOI[0][0],TWOI[0][1])],2)
+        all_data_low = np.mean(all_data_low[:,:,range(TWOI[0][0],TWOI[0][1])],2)
+        all_data_high = np.mean(all_data_high[:,:,range(TWOI[0][0],TWOI[0][1])],2)
+        
+        # initial parameters
+        mu_low_guess, mu_high_guess = np.mean(all_data_low,0), np.mean(all_data_high,0)
+        sigma_low_guess, sigma_high_guess = np.cov(all_data_low.T), np.cov(all_data_high.T)
+        if len(list_chans)==1:
+            precision_low_guess, precision_high_guess = [[1/sigma_low_guess]],[[1/sigma_high_guess]]
+        else :
+            try :
+                precision_low_guess, precision_high_guess = np.linalg.inv(sigma_low_guess),np.linalg.inv(sigma_high_guess)
+            except :
+                precision_low_guess, precision_high_guess = np.linalg.pinv(sigma_low_guess),np.linalg.pinv(sigma_high_guess)
+        beta_guess = 0.7
+        
+        # check the hyperparameters
+        param_grid = {"n_components": range(1, 4),"covariance_type": ["tied","full"],}
+        grid_search = GridSearchCV(GaussianMixture(), param_grid=param_grid, scoring=gmm_bic_score)
+        grid_search.fit(all_data)
+        GaussianMixture00_results_this_sub['best_hyperparams'] = grid_search.best_params_
+        print('nb of mixtures for S'+realSubIDs[SubID]+' : ',grid_search.best_params_['n_components'])
+        
+        # fit with hyperparameters (2,'full')
+        GMM = GaussianMixture(n_components=2, covariance_type='full', n_init=nb_iterations,
+                              means_init=[mu_high_guess,mu_low_guess],
+                              weights_init=[beta_guess,1-beta_guess],
+                              precisions_init=[precision_high_guess,precision_low_guess])
+        
+        GMM.fit(np.array(all_data))
+        predictions = GMM.predict(all_data)
+        GaussianMixture00_results_this_sub['means'] = GMM.means_
+        GaussianMixture00_results_this_sub['covariances'] = GMM.covariances_
+        GaussianMixture00_results_this_sub['predictions'] = predictions
+        
+        # fill-in the correct predictions
+        audibility, predictions = list(audibility), list(predictions)
+        GaussianMixture00_results_this_sub['correct_actual_predictions'] = {thresh:[] for thresh in aud_thresh}
+        for ind_activity, p in enumerate(predictions) :
+            for thresh in aud_thresh :
+                if (p==1 and audibility[ind_activity] >= thresh) or (p==0 and audibility[ind_activity] < thresh) :
+                    GaussianMixture00_results_this_sub['correct_actual_predictions'][thresh].append(1)
+                else :
+                    GaussianMixture00_results_this_sub['correct_actual_predictions'][thresh].append(0)
+                    
+        # also add the parameters of the real distributions and the ideal predictions
+        data_real_high = {thresh:all_data[snrEpoch._metadata['audibility'] >= thresh] for thresh in aud_thresh}
+        data_real_low = {thresh:all_data[snrEpoch._metadata['audibility'] < thresh] for thresh in aud_thresh}
+        real_beta = {thresh:len(data_real_high[thresh])/len(all_data) for thresh in aud_thresh}
+        real_mu_high, real_mu_low = {thresh:np.mean(data_real_high[thresh],0) for thresh in aud_thresh}, {thresh:np.mean(data_real_low[thresh],0) for thresh in aud_thresh}
+        real_sigma_high, real_sigma_low = {thresh:np.cov(data_real_high[thresh].T) for thresh in aud_thresh}, {thresh:np.cov(data_real_high[thresh].T) for thresh in aud_thresh}
+        GaussianMixture00_results_this_sub['real_parameters'] = {thresh:[real_beta[thresh], real_mu_high[thresh], real_sigma_high[thresh], real_mu_low[thresh], real_sigma_low[thresh]] for thresh in aud_thresh}
+        real_HSP_list = {thresh:[] for thresh in aud_thresh} # HSP list given by the real values of the parameters
+        for ind, activity in enumerate(all_data):
+            for thresh in aud_thresh :
+                try : 
+                    try :
+                        a, b = multivariate_normal.pdf(activity,real_mu_high[thresh],real_sigma_high[thresh]), multivariate_normal.pdf(activity,real_mu_low[thresh],real_sigma_low[thresh])
+                    except : # if singular covariance matrix
+                        a, b = multivariate_normal.pdf(activity,real_mu_high[thresh],real_sigma_high[thresh],allow_singular=True), multivariate_normal.pdf(activity,real_mu_low[thresh],real_sigma_low[thresh],allow_singular=True)
+                    real_HSP_list[thresh].append(real_beta[thresh]*a/(real_beta[thresh]*a + (1-real_beta[thresh])*b))
+                except : 
+                    print('Issue for thresh '+str(thresh)+', S'+realSubIDs[SubID]+'\n',all)
+        GaussianMixture00_results_this_sub['correct_ideal_predictions'] = {thresh:[] for thresh in aud_thresh}
+        for thresh in aud_thresh :
+            for ind_activity, hsp in enumerate(real_HSP_list[thresh]) :
+                if (hsp >= 0.5 and audibility[ind_activity] >= thresh) or (hsp < 0.5 and audibility[ind_activity] < thresh) :
+                    GaussianMixture00_results_this_sub['correct_ideal_predictions'][thresh].append(1)
+                else :
+                    GaussianMixture00_results_this_sub['correct_ideal_predictions'][thresh].append(0)
         
         # save the results for this subject
         if save :
@@ -2636,7 +2827,7 @@ def Predict_GaussianMixture00_Sklearn(list_SubIDs, snr, TWOI, nb_iterations=5, a
             matfile = {}
             for key in GaussianMixture00_results_this_sub.keys():
                 matfile[key] = np.array(GaussianMixture00_results_this_sub[key])
-            scipy.io.savemat('Model9_Twind_5cv_active_filtered_10Hz_S'+realSubIDs[SubID]+'.mat', matfile)
+            scipy.io.savemat('Model9_MultiChan_Twind_active_filtered_10Hz_S'+realSubIDs[SubID]+'.mat', matfile)
             
             os.chdir(datapath)
         
