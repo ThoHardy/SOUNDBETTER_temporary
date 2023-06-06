@@ -113,7 +113,7 @@ if choice == 'multi_chans':
 
 #%% sklearn.GaussianMixture
 
-if choice == 'sklearn':
+def EM_MVPA():
     aud_thresh=[0,1,2,3,4] #+ [6,7,8,9]
     snr = -9
     list_avg_powers, list_sem_powers = {thresh:[] for thresh in aud_thresh}, {thresh:[] for thresh in aud_thresh}
@@ -153,7 +153,7 @@ if choice == 'sklearn':
             nb_mixtures_this_time.append(result['best_hyperparams']['n_components'])
             AUCs_this_time.append(result['AUC_on_audibility'])
             p_values_this_time.append(result['p_value_on_audibility'])
-            t_values_this_time.append(result['t_value_on_audibility'])
+            t_values_this_time.append(abs(result['t_value_on_audibility']))
             consistencies_this_time.append(np.mean(result['CV_rand_scores']))
             for thresh in aud_thresh :
                 to_add_actual = np.mean(result['correct_actual_predictions'][thresh])
@@ -248,7 +248,6 @@ if choice == 'sklearn':
     plt.figure()
     plt.title('t_value of the 1D EM on MVPA data, at SNR '+str(snr))
     plt.errorbar(2*times_list-500,list_avg_t_values,np.array(list_std_t_values)/np.sqrt(20))
-    plt.scatter(2*times_list[list_avg_t_values<0.05]-500,[0 for i in range(len(times_list[list_avg_t_values<0.01]))],marker='*')
     plt.xlabel('time')
     plt.ylabel('t_values')
     plt.legend()
@@ -276,7 +275,7 @@ if choice == 'sklearn':
     
 #%% sklearn.GaussianMixture on bimodal simulations
 
-if choice == 'sklearn_simulations_bimodal':
+def EM_BimodalSimulation():
     aud_thresh_for_simulation=3
     snr = -9
     list_avg_powers, list_sem_powers = [], []
@@ -316,7 +315,7 @@ if choice == 'sklearn_simulations_bimodal':
             nb_mixtures_this_time.append(result['best_hyperparams']['n_components'])
             AUCs_this_time.append(result['AUC_on_audibility'])
             p_values_this_time.append(result['p_value_on_audibility'])
-            t_values_this_time.append(result['t_value_on_audibility'])
+            t_values_this_time.append(abs(result['t_value_on_audibility']))
             consistencies_this_time.append(np.mean(result['CV_rand_scores']))
             to_add_actual = np.mean(result['correct_actual_predictions'])
             to_add_actual_not_heard = np.mean(result['correct_actual_predictions_not_heard'])
@@ -405,7 +404,6 @@ if choice == 'sklearn_simulations_bimodal':
     plt.figure()
     plt.title('t_value of the 1D EM on simulated bimodal data (H0 : the means are equal), at SNR '+str(snr)+', auditory_threshold='+str(aud_thresh_for_simulation))
     plt.errorbar(2*times_list-500,list_avg_t_values,np.array(list_std_t_values)/np.sqrt(20))
-    plt.scatter(2*times_list[list_avg_t_values<0.05]-500,[0 for i in range(len(times_list[list_avg_t_values<0.01]))],marker='*')
     plt.xlabel('time')
     plt.ylabel('t_values')
     plt.legend()
@@ -432,7 +430,7 @@ if choice == 'sklearn_simulations_bimodal':
     
 #%% sklearn.GaussianMixture on unimodal simulations
 
-if choice == 'sklearn_simulations_unimodal':
+def EM_UnimodalSimulation():
     aud_thresh_for_simulation=3
     snr = -9
     list_avg_powers, list_sem_powers = [], []
@@ -472,7 +470,7 @@ if choice == 'sklearn_simulations_unimodal':
             nb_mixtures_this_time.append(result['best_hyperparams']['n_components'])
             AUCs_this_time.append(result['AUC_on_audibility'])
             p_values_this_time.append(result['p_value_on_audibility'])
-            t_values_this_time.append(result['t_value_on_audibility'])
+            t_values_this_time.append(abs(result['t_value_on_audibility']))
             consistencies_this_time.append(np.mean(result['CV_rand_scores']))
             to_add_actual = np.mean(result['correct_actual_predictions'])
             to_add_actual_not_heard = np.mean(result['correct_actual_predictions_not_heard'])
@@ -509,6 +507,9 @@ if choice == 'sklearn_simulations_unimodal':
         list_sem_powers_heard.append(np.std(predictibility_powers_heard)/np.sqrt(20))
         print('average power : ',np.mean(predictibility_powers))
         print('average ideal power : ',np.mean(ideal_predictibility_powers))
+        
+    list_avg_powers = np.array(list_avg_powers).T
+    list_sem_powers = np.array(list_sem_powers).T
     
     
     os.chdir(datapath+'/Figures_Thomas/Models_Evaluations')
@@ -559,7 +560,6 @@ if choice == 'sklearn_simulations_unimodal':
     plt.figure()
     plt.title('t_value of the 1D EM on simulated unimodal data (H0 : the means are equal), at SNR '+str(snr)+', auditory_threshold='+str(aud_thresh_for_simulation))
     plt.errorbar(2*times_list-500,list_avg_t_values,np.array(list_std_t_values)/np.sqrt(20))
-    plt.scatter(2*times_list[list_avg_t_values<0.05]-500,[0 for i in range(len(times_list[list_avg_t_values<0.01]))],marker='*')
     plt.xlabel('time')
     plt.ylabel('t_values')
     plt.legend()
@@ -586,7 +586,7 @@ if choice == 'sklearn_simulations_unimodal':
     
 #%% sklearn.KMeans
 
-if choice == 'kmeans':
+def KM_MVPA():
     aud_thresh=[0,1,2,3,4,5,6,7,8] #+ [6,7,8,9]
     list_avg_powers, list_sem_powers = {thresh:[] for thresh in aud_thresh}, {thresh:[] for thresh in aud_thresh}
     list_avg_powers_not_heard, list_sem_powers_not_heard = {thresh:[] for thresh in aud_thresh}, {thresh:[] for thresh in aud_thresh}
@@ -624,7 +624,7 @@ if choice == 'kmeans':
         for SubID, result in enumerate(cv) :
             AUCs_this_time.append(result['AUC_on_audibility'])
             p_values_this_time.append(result['p_value_on_audibility'])
-            t_values_this_time.append(result['t_value_on_audibility'])
+            t_values_this_time.append(abs(result['t_value_on_audibility']))
             consistencies_this_time.append(np.mean(result['CV_rand_scores']))
             for thresh in aud_thresh :
                 to_add_actual = np.mean(result['correct_actual_predictions'][thresh])
@@ -719,7 +719,6 @@ if choice == 'kmeans':
     plt.figure()
     plt.title('t_value of the 1D kmeans on MVPA data (H0 : the means are equal), at SNR '+str(snr)+', auditory_threshold='+str(aud_thresh_for_simulation))
     plt.errorbar(2*times_list-500,list_avg_t_values,np.array(list_std_t_values)/np.sqrt(20))
-    plt.scatter(2*times_list[list_avg_t_values<0.05]-500,[0 for i in range(len(times_list[list_avg_t_values<0.01]))],marker='*')
     plt.xlabel('time')
     plt.ylabel('t_values')
     plt.legend()
@@ -738,7 +737,7 @@ if choice == 'kmeans':
     
 #%% sklearn.KMeans on bimodal simulations
 
-if choice == 'kmeans_simulations_bimodal':
+def KM_BimodalSimulation():
     aud_thresh_for_simulation = 3
     snr = -7
     list_avg_powers, list_sem_powers = [], []
@@ -777,7 +776,7 @@ if choice == 'kmeans_simulations_bimodal':
         for SubID, result in enumerate(cv) :
             AUCs_this_time.append(result['AUC_on_audibility'])
             p_values_this_time.append(result['p_value_on_audibility'])
-            t_values_this_time.append(result['t_value_on_audibility'])
+            t_values_this_time.append(abs(result['t_value_on_audibility']))
             consistencies_this_time.append(np.mean(result['CV_rand_scores']))
             to_add_actual = np.mean(result['correct_actual_predictions'])
             to_add_actual_not_heard = np.mean(result['correct_actual_predictions_not_heard'])
@@ -865,7 +864,6 @@ if choice == 'kmeans_simulations_bimodal':
     plt.figure()
     plt.title('t_value of the 1D kmeans on simulated bimodal data (H0 : the means are equal), at SNR '+str(snr)+', auditory_threshold='+str(aud_thresh_for_simulation))
     plt.errorbar(2*times_list-500,list_avg_t_values,np.array(list_std_t_values)/np.sqrt(20))
-    plt.scatter(2*times_list[list_avg_t_values<0.05]-500,[0 for i in range(len(times_list[list_avg_t_values<0.01]))],marker='*')
     plt.xlabel('time')
     plt.ylabel('t_values')
     plt.legend()
@@ -884,7 +882,7 @@ if choice == 'kmeans_simulations_bimodal':
     
 #%% sklearn.KMeans on unimodal simulations
 
-if choice == 'kmeans_simulations_unimodal':
+def KM_UnimodalSimulation():
     aud_thresh_for_simulation = 3
     snr = -9
     list_avg_powers, list_sem_powers = [], []
@@ -923,7 +921,7 @@ if choice == 'kmeans_simulations_unimodal':
         for SubID, result in enumerate(cv) :
             AUCs_this_time.append(result['AUC_on_audibility'])
             p_values_this_time.append(result['p_value_on_audibility'])
-            t_values_this_time.append(result['t_value_on_audibility'])
+            t_values_this_time.append(abs(result['t_value_on_audibility']))
             consistencies_this_time.append(np.mean(result['CV_rand_scores']))
             to_add_actual = np.mean(result['correct_actual_predictions'])
             to_add_actual_not_heard = np.mean(result['correct_actual_predictions_not_heard'])
@@ -1011,7 +1009,6 @@ if choice == 'kmeans_simulations_unimodal':
     plt.figure()
     plt.title('t_value of the 1D kmeans on simulated unimodal data (H0 : the means are equal), at SNR '+str(snr)+', auditory_threshold='+str(aud_thresh_for_simulation))
     plt.errorbar(2*times_list-500,list_avg_t_values,np.array(list_std_t_values)/np.sqrt(20))
-    plt.scatter(2*times_list[list_avg_t_values<0.05]-500,[0 for i in range(len(times_list[list_avg_t_values<0.01]))],marker='*')
     plt.xlabel('time')
     plt.ylabel('t_values')
     plt.legend()
@@ -1093,5 +1090,19 @@ if choice == 'homemade' :
 #cv = all_models.rewrite_CV5_noNoise_Unimodal00(list_SubIDs=list(range(1)), save=True, redo=False)
 
 #cv = all_models.rewrite_CV5_noNoise_Null00(list_SubIDs=list(range(1)), save=True, redo=False)
+
+print('EM_MVPA')
+EM_MVPA()
+print('EM_BimodalSimulation')
+EM_BimodalSimulation()
+print('EM_UnimodalSimulation')
+#EM_UnimodalSimulation()
+print('KM_MVPA')
+KM_MVPA()
+print('KM_BimodalSimulation')
+KM_BimodalSimulation()
+print('KM_UnimodalSimulation')
+KM_UnimodalSimulation()
+
 
 
