@@ -25,6 +25,9 @@ from scipy.signal import butter,filtfilt
 from scipy.stats import norm, multivariate_normal
 from sklearn.mixture import GaussianMixture
 from sklearn.model_selection import GridSearchCV
+from sklearn.cluster import KMeans
+from sklearn.metrics import roc_auc_score, rand_score
+from sklearn.model_selection import cross_val_score
 
 datapath = seedSOUNDBETTER.datapath
 os.chdir(datapath)
@@ -2594,6 +2597,31 @@ def Predict_GaussianMixture00_Sklearn(list_SubIDs, snr, TWOI, nb_iterations=1, a
                 precision_low_guess, precision_high_guess = np.linalg.pinv(sigma_low_guess),np.linalg.pinv(sigma_high_guess)
         beta_guess = 0.75
         
+        # cross_validation if cv5 = True
+        if cv5 :
+            # create the training and testing blocks
+            list_of_blocks_train = [np.linspace(5,20,16),
+                              np.concatenate((np.linspace(1,4,4),np.linspace(9,20,12))),
+                              np.concatenate((np.linspace(1,8,8),np.linspace(13,20,8))),
+                              np.concatenate((np.linspace(1,12,12),np.linspace(17,20,4))),
+                              np.linspace(1,16,16)]
+            # fit the model on each fold
+            list_predictions, list_rand_scores = [], []
+            for fold in range(5):
+                GMM = GaussianMixture(n_components=2, covariance_type='full', n_init=nb_iterations,
+                                      means_init=[mu_high_guess,mu_low_guess],
+                                      weights_init=[beta_guess,1-beta_guess],
+                                      precisions_init=[precision_high_guess,precision_low_guess])
+                data_this_block = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=list_of_blocks_train[fold])[snr] for times in TWOI]).T
+                GMM.fit(data_this_block)
+                predictions_this_fold = GMM.predict(all_data)
+                if np.mean(GMM.means_[0]) > np.mean(GMM.means_[1]) : # make sure 0 is for not_heard and 1 for heard
+                    predictions_this_fold = [1-p for p in predictions_this_fold]
+                for labels in list_predictions:
+                    list_rand_scores.append(rand_score(labels,predictions_this_fold))
+                list_predictions.append(predictions_this_fold)
+            GaussianMixture00_results_this_sub['CV_rand_scores'] = list_rand_scores
+        
         # check the hyperparameters
         param_grid = {"n_components": range(1, 5),"covariance_type": ["tied","full"],}
         grid_search = GridSearchCV(GaussianMixture(), param_grid=param_grid, scoring=gmm_bic_score)
@@ -2614,7 +2642,7 @@ def Predict_GaussianMixture00_Sklearn(list_SubIDs, snr, TWOI, nb_iterations=1, a
         else : 
             GaussianMixture00_results_this_sub['means'] = [GMM.means_[1],GMM.means_[0]]
             GaussianMixture00_results_this_sub['covariances'] = [GMM.covariances_[1],GMM.covariances_[0]]
-            predictions = [1-p for p in predictions]
+            predictions = np.array([1-p for p in predictions])
         GaussianMixture00_results_this_sub['predictions'] = predictions
         
         
@@ -2622,13 +2650,30 @@ def Predict_GaussianMixture00_Sklearn(list_SubIDs, snr, TWOI, nb_iterations=1, a
         sub_populations = {0:[], 1:[]}
         for ind_pred, pred in enumerate(predictions):
             sub_populations[pred].append(real_audibility[ind_pred])
-        u, p_value = ustat(sub_populations[0],sub_populations[1])
-        GaussianMixture00_results_this_sub['AUC'] = u
-        if p_value == None :
-            GaussianMixture00_results_this_sub['p_value'] = 'None'
+        '''
+        u, p_value_audibility = ustat(sub_populations[0],sub_populations[1])
+        GaussianMixture00_results_this_sub['AUC_on_audibility'] = u
+        if p_value_audibility == None :
+            GaussianMixture00_results_this_sub['p_value_audibility'] = 'None'
         else : 
-            GaussianMixture00_results_this_sub['p_value'] = p_value
-        
+            GaussianMixture00_results_this_sub['p_value_audibility'] = p_value_audibility
+        '''
+        if len(sub_populations[0])*len(sub_populations[1]) != 0:
+            auc = roc_auc_score([0]*len(sub_populations[0])+[1]*len(sub_populations[1]),sub_populations[0]+sub_populations[1])
+            t, p = stats.ttest_ind(sub_populations[0],sub_populations[1])
+        else : 
+            auc, p = 0, 1
+        GaussianMixture00_results_this_sub['AUC_on_audibility'], GaussianMixture00_results_this_sub['p_value_on_audibility'] = auc, p
+        '''
+        # compute two-sample t-tests based on the real values of the data predicted heard vs not-heard (mais ça veut rien dire ??)
+        data_predicted_high = all_data[predictions==1]
+        data_predicted_low = all_data[predictions==0]
+        t_statistic, p_value = stats.ttest_ind(data_predicted_high, data_predicted_low)
+        GaussianMixture00_results_this_sub['p_value'] = p_value[0]
+        GaussianMixture00_results_this_sub['t_statistic'] = t_statistic[0]
+        auc = roc_auc_score([0]*len(data_predicted_low)+[1]*len(data_predicted_high),np.concatenate([data_predicted_low,data_predicted_high]))
+        GaussianMixture00_results_this_sub['AUC']
+        '''
         # fill-in the correct predictions
         GaussianMixture00_results_this_sub['correct_actual_predictions'] = {thresh:[] for thresh in aud_thresh}
         for ind_activity, p in enumerate(predictions) :
@@ -2689,6 +2734,188 @@ def Predict_GaussianMixture00_Sklearn(list_SubIDs, snr, TWOI, nb_iterations=1, a
         GaussianMixture00_results.append(GaussianMixture00_results_this_sub)
         
     return(GaussianMixture00_results)
+
+
+
+def Predict_GaussianMixture00_Sklearn_simulations(list_SubIDs, snr, TWOI, nb_iterations=1, aud_thresh_for_simulation=3,bimodal=True, cv5=False, save=False, redo=False):
+    
+    '''
+    Parameters
+    ----------
+    list_SubIDs : LIST of INT. Indexes of the subjects in realSubIDs (so between 0 and 19).
+    snr : negative INT
+    TWOI : LIST of [2-TUPLE of INT]
+    nb_iterations : INT, nb of times the fiting is done for each set of data (with only the best result kept at the end)
+    aud_thresh : LIST of INT. Auditivity thresholds you want to test.
+    save :BOOL , optional. If True, save the results.
+
+    Returns
+    -------
+    Bifurcation00_results : LIST of DICT. Results of the CV5 for each subject.
+
+    '''
+    # get data
+    datapath = seedSOUNDBETTER.datapath
+    os.chdir(datapath)
+    file_name = os.path.join('Subject_All_Active',
+                             'classif_SingleTrialPred_vowelpresence_train_maxSNR_test_allSNR_active_20_subjects')
+    classif = scipy.io.loadmat(file_name)
+    preds, conds = classif['preds'][0], classif['conds'][0]
+    
+    # initiate output
+    GaussianMixture00_results = []
+    
+    # function that will be used to fit the model
+    def gmm_bic_score(estimator, X):
+        """Callable to pass to GridSearchCV that will use the BIC score."""
+        # Make it negative since GridSearchCV expects a score to maximize
+        return(-estimator.bic(X))
+    
+    for SubID in list_SubIDs:
+        
+        print('\n Start Sub'+realSubIDs[SubID]+'\n')
+        
+        # initialize output
+        GaussianMixture00_results_this_sub = {}
+        
+        # real audibility to compare with true state
+        preds_this_sub, conds_this_sub = preds[SubID], conds[SubID]
+        snr_to_ind = {-20:1, -13:2, -11:3, -9:4, -7:5, -5:6, -3:7}
+        conds_this_snr = conds_this_sub[conds_this_sub.T[4]==snr_to_ind[snr]] # choose just the good snr (4 -> snr-9, 5 -> -7)!!!!
+        real_Audibility = conds_this_snr.T[0][conds_this_snr.T[1]<21] # remove blocks > 20
+        # gather activity data
+        all_Data = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=np.linspace(1,20,20))[snr] for times in TWOI]).T
+        all_Data_low = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=np.linspace(1,20,20))[-20] for times in TWOI]).T
+        all_Data_high = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=np.linspace(1,20,20))[-5] for times in TWOI]).T
+        
+        # build simulated data based on the real distributions
+        if bimodal :
+            Data_real_high = all_Data[real_Audibility>=aud_thresh_for_simulation]
+            Data_real_low = all_Data[real_Audibility<aud_thresh_for_simulation]
+            real_mu_high, real_mu_low = np.mean(Data_real_high,0), np.mean(Data_real_low,0)
+            real_sigma_high, real_sigma_low = np.cov(Data_real_high.T), np.cov(Data_real_high.T)
+            if len(real_mu_high)==1:
+                simulated_data_high = np.random.normal(real_mu_high,real_sigma_high,(len(Data_real_high),1))
+                simulated_data_low = np.random.normal(real_mu_low,real_sigma_low,(len(Data_real_low),1))
+            else :
+                simulated_data_high = np.random.multivariate_normal(real_mu_high,real_sigma_high,len(Data_real_high))
+                simulated_data_low = np.random.multivariate_normal(real_mu_low,real_sigma_low,len(Data_real_low))
+            simulated_data, simulated_labels = np.concatenate([simulated_data_high,simulated_data_low]), [1]*len(Data_real_high) + [0]*len(Data_real_low)
+            
+            random_indexes = np.random.permutation(len(all_Data))
+            all_data, real_audibility = simulated_data[random_indexes], np.array(simulated_labels)[random_indexes]
+        else :
+            real_mu, real_sigma = np.mean(all_Data,0), np.cov(all_Data.T)
+            all_data = np.random.multivariate_normal(real_mu,real_sigma,len(all_Data))
+            
+        # initial parameters
+        mu_low_guess, mu_high_guess = np.mean(all_Data_low,0), np.mean(all_Data_high,0)
+        sigma_low_guess, sigma_high_guess = np.cov(all_Data_low.T), np.cov(all_Data_high.T)
+        if len(TWOI)==1:
+            precision_low_guess, precision_high_guess = [[1/sigma_low_guess]],[[1/sigma_high_guess]]
+        else :
+            try :
+                precision_low_guess, precision_high_guess = np.linalg.inv(sigma_low_guess),np.linalg.inv(sigma_high_guess)
+            except :
+                precision_low_guess, precision_high_guess = np.linalg.pinv(sigma_low_guess),np.linalg.pinv(sigma_high_guess)
+        beta_guess = 0.75
+        
+        # cross_validation if cv5 = True
+        if cv5 :
+            # create the training and testing blocks
+            list_of_blocks_train = [np.linspace(5,20,16),
+                              np.concatenate((np.linspace(1,4,4),np.linspace(9,20,12))),
+                              np.concatenate((np.linspace(1,8,8),np.linspace(13,20,8))),
+                              np.concatenate((np.linspace(1,12,12),np.linspace(17,20,4))),
+                              np.linspace(1,16,16)]
+            # fit the model on each fold
+            list_predictions, list_rand_scores = [], []
+            for fold in range(5):
+                GMM = GaussianMixture(n_components=2, covariance_type='full', n_init=nb_iterations,
+                                      means_init=[mu_high_guess,mu_low_guess],
+                                      weights_init=[beta_guess,1-beta_guess],
+                                      precisions_init=[precision_high_guess,precision_low_guess])
+                data_this_block = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=list_of_blocks_train[fold])[snr] for times in TWOI]).T
+                GMM.fit(data_this_block)
+                predictions_this_fold = GMM.predict(all_data)
+                if np.mean(GMM.means_[0]) > np.mean(GMM.means_[1]) : # make sure 0 is for not_heard and 1 for heard
+                    predictions_this_fold = [1-p for p in predictions_this_fold]
+                for labels in list_predictions:
+                    list_rand_scores.append(rand_score(labels,predictions_this_fold))
+                list_predictions.append(predictions_this_fold)
+            GaussianMixture00_results_this_sub['CV_rand_scores'] = list_rand_scores
+        
+        # check the hyperparameters
+        param_grid = {"n_components": range(1, 5),"covariance_type": ["tied","full"],}
+        grid_search = GridSearchCV(GaussianMixture(), param_grid=param_grid, scoring=gmm_bic_score)
+        grid_search.fit(all_data)
+        GaussianMixture00_results_this_sub['best_hyperparams'] = grid_search.best_params_
+        print('BIC-deduced nb of mixtures for S'+realSubIDs[SubID]+' : ',grid_search.best_params_['n_components'])
+        
+        # fit with hyperparameters (2,'full')
+        GMM = GaussianMixture(n_components=2, covariance_type='full', n_init=nb_iterations,
+                              means_init=[mu_high_guess,mu_low_guess],
+                              weights_init=[beta_guess,1-beta_guess],
+                              precisions_init=[precision_high_guess,precision_low_guess])
+        GMM.fit(all_data)
+        predictions = GMM.predict(all_data)
+        if np.mean(GMM.means_[0]) < np.mean(GMM.means_[1]) :
+            GaussianMixture00_results_this_sub['means'] = GMM.means_
+            GaussianMixture00_results_this_sub['covariances'] = GMM.covariances_
+        else : 
+            GaussianMixture00_results_this_sub['means'] = [GMM.means_[1],GMM.means_[0]]
+            GaussianMixture00_results_this_sub['covariances'] = [GMM.covariances_[1],GMM.covariances_[0]]
+            predictions = np.array([1-p for p in predictions])
+        GaussianMixture00_results_this_sub['predictions'] = predictions
+        
+        
+        # compute AUC and p-value for these predictions, based on the real audibility ratings (H0 : the medians of the two subdistributions are the same)
+        if bimodal :
+            sub_populations = {0:[], 1:[]}
+            for ind_pred, pred in enumerate(predictions):
+                sub_populations[pred].append(real_audibility[ind_pred])
+            if len(sub_populations[0])*len(sub_populations[1]) != 0:
+                auc = roc_auc_score([0]*len(sub_populations[0])+[1]*len(sub_populations[1]),sub_populations[0]+sub_populations[1])
+                t, p = stats.ttest_ind(sub_populations[0],sub_populations[1])
+            else : 
+                auc, p = 0, 1
+            GaussianMixture00_results_this_sub['AUC_on_audibility'], GaussianMixture00_results_this_sub['p_value_on_audibility'] = auc, p
+        
+            # fill-in the correct predictions
+            GaussianMixture00_results_this_sub['correct_actual_predictions'] = []
+            for ind_activity, p in enumerate(predictions) :
+                GaussianMixture00_results_this_sub['correct_actual_predictions'].append(int(p==real_audibility[ind_activity]))
+        
+            # fill-in the correct predictions for separated categories
+            GaussianMixture00_results_this_sub['correct_actual_predictions_heard'] = []
+            GaussianMixture00_results_this_sub['correct_actual_predictions_not_heard'] = []
+            for ind_activity, p in enumerate(predictions) :
+                if real_audibility[ind_activity]==1 :
+                    GaussianMixture00_results_this_sub['correct_actual_predictions_heard'].append(p)
+                else :
+                    GaussianMixture00_results_this_sub['correct_actual_predictions_not_heard'].append(1-p)
+            
+            # also add the parameters of the real distributions and the ideal predictions
+            real_beta = len(Data_real_high)/len(all_Data)
+            GaussianMixture00_results_this_sub['real_parameters'] = [real_beta, real_mu_high, real_sigma_high, real_mu_low, real_sigma_low]
+            real_HSP_list = [] # HSP list given by the real values of the parameters
+            for ind, activity in enumerate(all_data):
+                try :
+                    a, b = multivariate_normal.pdf(activity,real_mu_high,real_sigma_high), multivariate_normal.pdf(activity,real_mu_low,real_sigma_low)
+                except : # if singular covariance matrix
+                    a, b = multivariate_normal.pdf(activity,real_mu_high,real_sigma_high,allow_singular=True), multivariate_normal.pdf(activity,real_mu_low,real_sigma_low,allow_singular=True)
+                real_HSP_list.append(real_beta*a/(real_beta*a + (1-real_beta)*b))
+            GaussianMixture00_results_this_sub['correct_ideal_predictions'] = []
+            for ind_activity, hsp in enumerate(real_HSP_list) :
+                if (hsp >= 0.5 and real_audibility[ind_activity]==1) or (hsp < 0.5 and real_audibility[ind_activity]==0) :
+                    GaussianMixture00_results_this_sub['correct_ideal_predictions'].append(1)
+                else :
+                    GaussianMixture00_results_this_sub['correct_ideal_predictions'].append(0)
+        
+        GaussianMixture00_results.append(GaussianMixture00_results_this_sub)
+        
+    return(GaussianMixture00_results)
+
 
 
 def Predict_GaussianMixture00_MultiChan(list_chans,list_SubIDs, snr, TWOI, nb_iterations=1, aud_thresh=[3],cv5=False, save=False, redo=False):
@@ -2835,3 +3062,373 @@ def Predict_GaussianMixture00_MultiChan(list_chans,list_SubIDs, snr, TWOI, nb_it
         
     return(GaussianMixture00_results)
 
+#%% KNN time !
+
+def Predict_Kmeans(list_SubIDs, snr, TWOI, nb_iterations=1, aud_thresh=[3],cv5=False, save=False, redo=False):
+    '''
+    pas commencé
+    '''
+    '''
+    Parameters
+    ----------
+    list_SubIDs : TYPE
+        DESCRIPTION.
+    snr : TYPE
+        DESCRIPTION.
+    TWOI : TYPE
+        DESCRIPTION.
+    nb_iterations : TYPE, optional
+        DESCRIPTION. The default is 1.
+    aud_thresh : TYPE, optional
+        DESCRIPTION. The default is [3].
+    cv5 : TYPE, optional
+        DESCRIPTION. The default is False.
+    save : TYPE, optional
+        DESCRIPTION. The default is False.
+    redo : TYPE, optional
+        DESCRIPTION. The default is False.
+
+    Returns
+    -------
+    None.
+
+    '''
+    '''
+    Parameters
+    ----------
+    list_SubIDs : LIST of INT. Indexes of the subjects in realSubIDs (so between 0 and 19).
+    snr : negative INT
+    TWOI : LIST of [2-TUPLE of INT]
+    nb_iterations : INT, nb of times the fiting is done for each set of data (with only the best result kept at the end)
+    aud_thresh : LIST of INT. Auditivity thresholds you want to test.
+    save :BOOL , optional. If True, save the results.
+
+    Returns
+    -------
+    Bifurcation00_results : LIST of DICT. Results of the CV5 for each subject.
+
+    '''
+    # get data
+    datapath = seedSOUNDBETTER.datapath
+    os.chdir(datapath)
+    file_name = os.path.join('Subject_All_Active',
+                             'classif_SingleTrialPred_vowelpresence_train_maxSNR_test_allSNR_active_20_subjects')
+    classif = scipy.io.loadmat(file_name)
+    preds, conds = classif['preds'][0], classif['conds'][0]
+    
+    # initiate output
+    kmeans_results = []
+    
+    for SubID in list_SubIDs:
+        
+        # Check if it has been done already
+        os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
+        if os.path.exists('Model10_Twind_active_filtered_10Hz_S'+realSubIDs[SubID]+'.mat')==1 and redo==0:
+            print('\n Sub'+realSubIDs[SubID]+' already done \n')
+            continue
+        os.chdir(datapath)
+        
+        print('\n Start Sub'+realSubIDs[SubID]+'\n')
+        
+        # initialize output
+        kmeans_results_this_sub = {}
+        
+        # real audibility to compare with true state
+        preds_this_sub, conds_this_sub = preds[SubID], conds[SubID]
+        snr_to_ind = {-20:1, -13:2, -11:3, -9:4, -7:5, -5:6, -3:7}
+        conds_this_snr = conds_this_sub[conds_this_sub.T[4]==snr_to_ind[snr]] # choose just the good snr (4 -> snr-9, 5 -> -7)!!!!
+        real_audibility = conds_this_snr.T[0][conds_this_snr.T[1]<21] # remove blocks > 20
+        # gather activity data
+        all_data = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=np.linspace(1,20,20))[snr] for times in TWOI]).T
+        
+        # cross_validation if cv5 = True
+        if cv5 :
+            # create the training and testing blocks
+            list_of_blocks_train = [np.linspace(5,20,16),
+                              np.concatenate((np.linspace(1,4,4),np.linspace(9,20,12))),
+                              np.concatenate((np.linspace(1,8,8),np.linspace(13,20,8))),
+                              np.concatenate((np.linspace(1,12,12),np.linspace(17,20,4))),
+                              np.linspace(1,16,16)]
+            # fit the model on each fold
+            list_predictions, list_rand_scores = [], []
+            for fold in range(5):
+                kmeans = KMeans(n_clusters=2,n_init=10)
+                data_this_block = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=list_of_blocks_train[fold])[snr] for times in TWOI]).T
+                kmeans.fit(data_this_block)
+                predictions_this_fold = kmeans.predict(all_data)
+                if np.mean(kmeans.cluster_centers_[0]) > np.mean(kmeans.cluster_centers_[1]) : # make sure 0 is for not_heard and 1 for heard
+                    predictions_this_fold = [1-p for p in predictions_this_fold]
+                for labels in list_predictions:
+                    list_rand_scores.append(rand_score(labels,predictions_this_fold))
+                list_predictions.append(predictions_this_fold)
+            kmeans_results_this_sub['CV_rand_scores'] = list_rand_scores
+        
+        # fit data with 2 clusters
+        kmeans = KMeans(n_clusters=2,n_init=15)
+        kmeans.fit(all_data)
+        predictions = kmeans.labels_
+        if np.mean(kmeans.cluster_centers_[0]) < np.mean(kmeans.cluster_centers_[1]) :
+            kmeans_results_this_sub['means'] = kmeans.cluster_centers_
+        else : 
+            kmeans_results_this_sub['means'] = [kmeans.cluster_centers_[1],kmeans.cluster_centers_[0]]
+            predictions = [1-p for p in predictions]
+        kmeans_results_this_sub['predictions'] = predictions
+        
+        # compute AUC and p-value for these predictions, based on the real audibility ratings (H0 : the medians of the two subdistributions are the same)
+        sub_populations = {0:[], 1:[]}
+        for ind_pred, pred in enumerate(predictions):
+            sub_populations[pred].append(real_audibility[ind_pred])
+            '''
+        u, p_value_audibility = ustat(sub_populations[0],sub_populations[1])
+        kmeans_results_this_sub['AUC'] = u
+        if p_value_audibility == None :
+            kmeans_results_this_sub['p_value_audibility'] = 'None'
+        else : 
+            kmeans_results_this_sub['p_value_audibility'] = p_value_audibility
+        '''
+            if len(sub_populations[0])*len(sub_populations[1]) != 0:
+                auc = roc_auc_score([0]*len(sub_populations[0])+[1]*len(sub_populations[1]),sub_populations[0]+sub_populations[1])
+                t, p = stats.ttest_ind(sub_populations[0],sub_populations[1])
+            else : 
+                auc, p = 0, 1
+            kmeans_results_this_sub['AUC_on_audibility'], kmeans_results_this_sub['p_value_on_audibility'] = auc, p
+            
+        '''
+        # compute two-sample t-tests based on the real values of the data predicted heard vs not-heard
+        data_predicted_high = all_data[predictions==1]
+        data_predicted_low = all_data[predictions==0]
+        t_statistic, p_value = stats.ttest_ind(data_predicted_high, data_predicted_low)
+        kmeans_results_this_sub['p_value'] = p_value[0]
+        kmeans_results_this_sub['t_statistic'] = t_statistic[0]
+        '''
+        # fill-in the correct predictions
+        kmeans_results_this_sub['correct_actual_predictions'] = {thresh:[] for thresh in aud_thresh}
+        for ind_activity, p in enumerate(predictions) :
+            for thresh in aud_thresh :
+                if (p==1 and real_audibility[ind_activity] >= thresh) or (p==0 and real_audibility[ind_activity] < thresh) :
+                    kmeans_results_this_sub['correct_actual_predictions'][thresh].append(1)
+                else :
+                    kmeans_results_this_sub['correct_actual_predictions'][thresh].append(0)
+        
+        # fill-in the correct predictions for separated categories
+        kmeans_results_this_sub['correct_actual_predictions_heard'] = {thresh:[] for thresh in aud_thresh}
+        kmeans_results_this_sub['correct_actual_predictions_not_heard'] = {thresh:[] for thresh in aud_thresh}
+        for ind_activity, p in enumerate(predictions) :
+            for thresh in aud_thresh :
+                if real_audibility[ind_activity] < thresh : # not heard, so we want p=0
+                    kmeans_results_this_sub['correct_actual_predictions_not_heard'][thresh].append(1-p)
+                else : # heard, so we want p=1
+                    kmeans_results_this_sub['correct_actual_predictions_heard'][thresh].append(p)
+                
+        # also add the parameters of the real distributions and the ideal predictions
+        data_real_high = {thresh:all_data[real_audibility>=thresh] for thresh in aud_thresh}
+        data_real_low = {thresh:all_data[real_audibility<thresh] for thresh in aud_thresh}
+        real_mu_high, real_mu_low = {thresh:np.mean(data_real_high[thresh],0) for thresh in aud_thresh}, {thresh:np.mean(data_real_low[thresh],0) for thresh in aud_thresh}
+        kmeans_results_this_sub['real_parameters'] = {thresh:[real_mu_low[thresh], real_mu_high[thresh]] for thresh in aud_thresh}
+        kmeans_results_this_sub['correct_ideal_predictions'] = {thresh:[] for thresh in aud_thresh}
+        for thresh in aud_thresh :
+            for ind_activity, activity in enumerate(all_data) :
+                distances = [np.linalg.norm(activity-mean) for mean in [real_mu_low[thresh],real_mu_high[thresh]]]
+                kmeans_results_this_sub['correct_ideal_predictions'][thresh].append(int(np.argmin(distances)==real_audibility[ind_activity]>=thresh))
+        
+        # save the results for this subject
+        if save :
+            
+            os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
+
+            matfile = {}
+            for key in kmeans_results_this_sub.keys(): 
+                matfile[key] = np.array(kmeans_results_this_sub[key])
+            scipy.io.savemat('Model10_Twind_active_filtered_10Hz_S'+realSubIDs[SubID]+'.mat', matfile)
+            
+            os.chdir(datapath)
+        
+        kmeans_results.append(kmeans_results_this_sub)
+        
+    return(kmeans_results)
+
+
+def Predict_Kmeans_simulations(list_SubIDs, snr, TWOI, nb_iterations=1, bimodal=True, aud_thresh_for_simulation=3,cv5=False, save=False, redo=False):
+    '''
+    pas commencé
+    '''
+    '''
+    Parameters
+    ----------
+    list_SubIDs : TYPE
+        DESCRIPTION.
+    snr : TYPE
+        DESCRIPTION.
+    TWOI : TYPE
+        DESCRIPTION.
+    nb_iterations : TYPE, optional
+        DESCRIPTION. The default is 1.
+    aud_thresh : TYPE, optional
+        DESCRIPTION. The default is [3].
+    cv5 : TYPE, optional
+        DESCRIPTION. The default is False.
+    save : TYPE, optional
+        DESCRIPTION. The default is False.
+    redo : TYPE, optional
+        DESCRIPTION. The default is False.
+
+    Returns
+    -------
+    None.
+
+    '''
+    '''
+    Parameters
+    ----------
+    list_SubIDs : LIST of INT. Indexes of the subjects in realSubIDs (so between 0 and 19).
+    snr : negative INT
+    TWOI : LIST of [2-TUPLE of INT]
+    nb_iterations : INT, nb of times the fiting is done for each set of data (with only the best result kept at the end)
+    aud_thresh : LIST of INT. Auditivity thresholds you want to test.
+    save :BOOL , optional. If True, save the results.
+
+    Returns
+    -------
+    Bifurcation00_results : LIST of DICT. Results of the CV5 for each subject.
+
+    '''
+    # get data
+    datapath = seedSOUNDBETTER.datapath
+    os.chdir(datapath)
+    file_name = os.path.join('Subject_All_Active',
+                             'classif_SingleTrialPred_vowelpresence_train_maxSNR_test_allSNR_active_20_subjects')
+    classif = scipy.io.loadmat(file_name)
+    preds, conds = classif['preds'][0], classif['conds'][0]
+    
+    # initiate output
+    kmeans_results = []
+    
+    for SubID in list_SubIDs:
+        
+        # Check if it has been done already
+        os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
+        if os.path.exists('Model10_Twind_active_filtered_10Hz_S'+realSubIDs[SubID]+'.mat')==1 and redo==0:
+            print('\n Sub'+realSubIDs[SubID]+' already done \n')
+            continue
+        os.chdir(datapath)
+        
+        print('\n Start Sub'+realSubIDs[SubID]+'\n')
+        
+        # initialize output
+        kmeans_results_this_sub = {}
+        
+        # real audibility to compare with true state
+        preds_this_sub, conds_this_sub = preds[SubID], conds[SubID]
+        snr_to_ind = {-20:1, -13:2, -11:3, -9:4, -7:5, -5:6, -3:7}
+        conds_this_snr = conds_this_sub[conds_this_sub.T[4]==snr_to_ind[snr]] # choose just the good snr (4 -> snr-9, 5 -> -7)!!!!
+        real_Audibility = conds_this_snr.T[0][conds_this_snr.T[1]<21] # remove blocks > 20
+        # gather activity data
+        all_Data = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=np.linspace(1,20,20))[snr] for times in TWOI]).T
+       
+        # build simulated data based on the real distributions
+        if bimodal :
+            Data_real_high = all_Data[real_Audibility>=aud_thresh_for_simulation]
+            Data_real_low = all_Data[real_Audibility<aud_thresh_for_simulation]
+            real_mu_high, real_mu_low = np.mean(Data_real_high,0), np.mean(Data_real_low,0)
+            real_sigma_high, real_sigma_low = np.cov(Data_real_high.T), np.cov(Data_real_high.T)
+            if len(real_mu_high)==1:
+                simulated_data_high = np.random.normal(real_mu_high,real_sigma_high,(len(Data_real_high),1))
+                simulated_data_low = np.random.normal(real_mu_low,real_sigma_low,(len(Data_real_low),1))
+            else :
+                simulated_data_high = np.random.multivariate_normal(real_mu_high,real_sigma_high,len(Data_real_high))
+                simulated_data_low = np.random.multivariate_normal(real_mu_low,real_sigma_low,len(Data_real_low))
+            simulated_data, simulated_labels = np.concatenate([simulated_data_high,simulated_data_low]), [1]*len(Data_real_high) + [0]*len(Data_real_low)
+            
+            random_indexes = np.random.permutation(len(all_Data))
+            all_data, real_audibility = simulated_data[random_indexes], np.array(simulated_labels)[random_indexes]
+        else :
+            real_mu, real_sigma = np.mean(all_Data,0), np.cov(all_Data.T)
+            all_data = np.random.multivariate_normal(real_mu,real_sigma,len(all_Data))
+            
+            
+        # cross_validation if cv5 = True
+        if cv5 :
+            # create the training and testing blocks
+            list_of_blocks_train = [np.linspace(5,20,16),
+                              np.concatenate((np.linspace(1,4,4),np.linspace(9,20,12))),
+                              np.concatenate((np.linspace(1,8,8),np.linspace(13,20,8))),
+                              np.concatenate((np.linspace(1,12,12),np.linspace(17,20,4))),
+                              np.linspace(1,16,16)]
+            # fit the model on each fold
+            list_predictions, list_rand_scores = [], []
+            for fold in range(5):
+                kmeans = KMeans(n_clusters=2,n_init=10)
+                data_this_block = np.array([EmpiricalDistribution(times,preds_this_sub,conds_this_sub,blocks=list_of_blocks_train[fold])[snr] for times in TWOI]).T
+                kmeans.fit(data_this_block)
+                predictions_this_fold = kmeans.predict(all_data)
+                if np.mean(kmeans.cluster_centers_[0]) > np.mean(kmeans.cluster_centers_[1]) : # make sure 0 is for not_heard and 1 for heard
+                    predictions_this_fold = [1-p for p in predictions_this_fold]
+                for labels in list_predictions:
+                    list_rand_scores.append(rand_score(labels,predictions_this_fold))
+                list_predictions.append(predictions_this_fold)
+            kmeans_results_this_sub['CV_rand_scores'] = list_rand_scores
+        
+        # fit data with 2 clusters
+        kmeans = KMeans(n_clusters=2,n_init=15)
+        kmeans.fit(all_data)
+        predictions = kmeans.labels_
+        if np.mean(kmeans.cluster_centers_[0]) < np.mean(kmeans.cluster_centers_[1]) :
+            kmeans_results_this_sub['means'] = kmeans.cluster_centers_
+        else : 
+            kmeans_results_this_sub['means'] = [kmeans.cluster_centers_[1],kmeans.cluster_centers_[0]]
+            predictions = [1-p for p in predictions]
+        kmeans_results_this_sub['predictions'] = predictions
+        
+        # compute AUC and p-value for these predictions, based on the real audibility ratings (H0 : the medians of the two subdistributions are the same)
+        sub_populations = {0:[], 1:[]}
+        for ind_pred, pred in enumerate(predictions):
+            sub_populations[pred].append(real_audibility[ind_pred])
+            if len(sub_populations[0])*len(sub_populations[1]) != 0:
+                auc = roc_auc_score([0]*len(sub_populations[0])+[1]*len(sub_populations[1]),sub_populations[0]+sub_populations[1])
+                t, p = stats.ttest_ind(sub_populations[0],sub_populations[1])
+            else : 
+                auc, p = 0, 1
+            kmeans_results_this_sub['AUC_on_audibility'], kmeans_results_this_sub['p_value_on_audibility'] = auc, p
+            
+        # fill-in the correct predictions
+        kmeans_results_this_sub['correct_actual_predictions'] = []
+        for ind_activity, p in enumerate(predictions) :
+            if p==real_audibility[ind_activity]:
+                kmeans_results_this_sub['correct_actual_predictions'].append(1)
+            else :
+                kmeans_results_this_sub['correct_actual_predictions'].append(0)
+        
+        # fill-in the correct predictions for separated categories
+        kmeans_results_this_sub['correct_actual_predictions_heard'] = []
+        kmeans_results_this_sub['correct_actual_predictions_not_heard'] = []
+        for ind_activity, p in enumerate(predictions) :
+            if real_audibility[ind_activity]==0 : # not heard, so we want p=0
+                kmeans_results_this_sub['correct_actual_predictions_not_heard'].append(1-p)
+            else : # heard, so we want p=1
+                kmeans_results_this_sub['correct_actual_predictions_heard'].append(p)
+                
+        # also add the parameters of the real distributions and the ideal predictions
+        data_real_high = all_data[real_Audibility>=aud_thresh_for_simulation]
+        data_real_low = all_data[real_Audibility<aud_thresh_for_simulation]
+        real_mu_high, real_mu_low = np.mean(data_real_high,0), np.mean(data_real_low,0)
+        kmeans_results_this_sub['real_parameters'] = [real_mu_low, real_mu_high]
+        kmeans_results_this_sub['correct_ideal_predictions'] = []
+        for ind_activity, activity in enumerate(all_data) :
+            distances = [np.linalg.norm(activity-mean) for mean in [real_mu_low,real_mu_high]]
+            kmeans_results_this_sub['correct_ideal_predictions'].append(int(np.argmin(distances)==real_Audibility[ind_activity]>=aud_thresh_for_simulation))
+        
+        # save the results for this subject
+        if save :
+            
+            os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
+
+            matfile = {}
+            for key in kmeans_results_this_sub.keys(): 
+                matfile[key] = np.array(kmeans_results_this_sub[key])
+            scipy.io.savemat('Model10_Twind_active_filtered_10Hz_S'+realSubIDs[SubID]+'.mat', matfile)
+            
+            os.chdir(datapath)
+        
+        kmeans_results.append(kmeans_results_this_sub)
+        
+    return(kmeans_results)
