@@ -19,11 +19,94 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import roc_auc_score
 
+from scipy.stats import pearsonr
+
 realSubIDs = seedSOUNDBETTER.SubIDs
 datapath = seedSOUNDBETTER.datapath
 
 
-nb_dims = 10
+def savePCAEpochs(nb_dims=5,refSub='01'):
+    
+    '''
+    Save Epochs with nb_dims first PCs instead of EEG channels. 
+    The PCs don't correspond within subjects, however.
+    To reorder by similarity of the PCs, call reorderPCAEpochs().
+    '''
+
+    explained_variances = []
+    dict_components = {}
+    list_reorderings = []
+    list_eps = []
+    
+    for SubID in range(20):
+        
+        print('\n Sub'+realSubIDs[SubID])
+        
+        # gather data
+        os.chdir(datapath + '/myEpochs_Active')
+        data_ref = 'Epoch_'+realSubIDs[SubID]+'-epo.fif'
+        myEpoch = mne.read_epochs(data_ref, preload=True)['snr == 4']
+        myEpoch.filter(0.05,5,method='iir') # SCP
+        
+        # formate data, fit and apply PCA
+        X = myEpoch.get_data()
+        Xconcat = np.concatenate(np.array([x.T for x in X]))
+        pca = PCA(n_components=nb_dims)
+        pca_results = pca.fit(Xconcat)
+        dict_components[realSubIDs[SubID]] = pca_results.components_
+        explained_variances.append([pca_results.explained_variance_ratio_,realSubIDs[SubID]])
+        PCAX = np.array([pca_results.transform(x.T).T for x in X])
+        ep = mne.EpochsArray(PCAX,
+                             mne.create_info(nb_dims, myEpoch.info["sfreq"], ch_types="eeg"),
+                             tmin=-0.5)
+        list_eps.append(ep)
+        
+    # reorder channels for coherence
+    ref_components = dict_components[refSub]
+    for SubID in range(20):
+        print('\n','reorder Sub'+realSubIDs[SubID])
+        
+        if realSubIDs[SubID]==refSub :
+            list_reorderings.append([str(k) for k in np.arange(0,nb_dims,1)])
+            # Store as mne.Epoch
+            ep = list_eps[SubID]
+            os.chdir(datapath + '/myEpochs_Active_10PCs')
+            data_ref = 'Epoch_'+realSubIDs[SubID]+'-epo.fif'
+            ep.save(data_ref,overwrite=True)
+            continue
+        
+        reordering = []
+        
+        components = dict_components[realSubIDs[SubID]]
+        for d1 in range(nb_dims):
+            
+            correlations_this_dim = []
+            for d2 in range(nb_dims):
+                if str(d2) in reordering :
+                    correlations_this_dim.append(-np.inf)
+                else:
+                    correlations_this_dim.append(pearsonr(ref_components[d2],components[d1])[0])
+            
+            # find the dimension with maximum correlation among the yet unmapped dimensions
+            mapped_dim = np.argmax(correlations_this_dim)
+            reordering.append(str(mapped_dim))
+        
+        list_reorderings.append(reordering)
+        
+        # reorder channels
+        ep = list_eps[SubID].reorder_channels(reordering)
+        
+        # Store as mne.Epoch
+        os.chdir(datapath + '/myEpochs_Active_10PCs')
+        data_ref = 'Epoch_'+realSubIDs[SubID]+'-epo.fif'
+        ep.save(data_ref,overwrite=True)
+        
+    return(explained_variances,list_reorderings)
+    
+
+    
+    
+    
 TwoPCs, kmeans_clust, gmm_clust = False, False, True
 
 # clusters that approximate Biyu He's first principal components
@@ -32,30 +115,14 @@ list_clusters_chans=[['C4','CP4','C6','CP6'],['C3','CP3','C5','CP5'],
                      ['C3','C1','Cz','C2','C4']]#,
                      #['P4','PO4','PO6','C5','FC5','FC3'],['P3','PO5','PO3','C6','FC6','FC4']]
 
-aucs, explained_variances = [], []
+aucs = []
 answers = []
 list_heatmaps = []
 
 TWOI = [505,515] # in indexes, not ms
-
-for SubID in range(20):
     
-    print('\n Sub'+realSubIDs[SubID])
     
-    # gather data
-    os.chdir(datapath + '/myEpochs_Active')
-    data_ref = 'Epoch_'+realSubIDs[SubID]+'-epo.fif'
-    myEpoch = mne.read_epochs(data_ref, preload=True)['snr == 4']
-    myEpoch.filter(0.05,5,method='iir') # SCP
-    
-    # formate data, fit and apply PCA
-    X = myEpoch.get_data()
-    Xconcat = np.concatenate(np.array([x.T for x in X]))
-    pca = PCA(n_components=nb_dims)
-    pca_results = pca.fit(Xconcat)
-    explained_variances.append([pca_results.explained_variance_ratio_,realSubIDs[SubID]])
-    PCAX = np.array([pca_results.transform(x.T) for x in X])
-    
+'''
     # extrem SNR data, useful for initializing the centroids
     myEpoch_Silence, myEpoch_Loud = mne.read_epochs(data_ref, preload=True)['snr == 1'], mne.read_epochs(data_ref, preload=True)['snr == 6']
     myEpoch_Silence.filter(0.05,5,method='iir') # SCP
@@ -99,13 +166,7 @@ for SubID in range(20):
                 kmeans.fit(np.mean(PCAX[:,TWOI[0]:TWOI[1],[dim,dim2]],1))
                 labels = kmeans.labels_
                 answers_this_sub[str(dim+1)+str(dim2+1)] = roc_auc_score(labels,real_labels)
-                '''
-                for dim3 in range(dim2+1,nb_dims):
-                    kmeans = KMeans(n_clusters=2,init=np.array([mean_low[[dim,dim2,dim3]],mean_high[[dim,dim2,dim3]]]))
-                    kmeans.fit(np.mean(PCAX[:,TWOI[0]:TWOI[1],[dim,dim2,dim3]],1))
-                    labels = kmeans.labels_
-                    answers_this_sub[str(dim+1)+str(dim2+1)+str(dim3+1)] = roc_auc_score(labels,real_labels)
-               '''
+                
         # clustering on all dimensions
         kmeans = KMeans(n_clusters=2,init=np.array([mean_low,mean_high]))
         kmeans.fit(np.mean(PCAX[:,TWOI[0]:TWOI[1],:],1))
@@ -225,6 +286,6 @@ ax = sns.heatmap(avg_heatmap, linewidth=0.5,xticklabels=np.arange(1,11,1),ytickl
 plt.title('Paiwise clusteringof the PCs, Sub'+realSubIDs[SubID])
 plt.savefig('Average_AUCs_2DGMM.png')
 plt.close()
-    
+    '''
 
     
