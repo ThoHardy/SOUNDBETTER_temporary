@@ -13,6 +13,7 @@ import numpy as np
 import mne
 from scipy.optimize import minimize 
 from scipy.stats import multivariate_normal
+import time
 
 datapath = seedSOUNDBETTER.datapath
 realSubIDs = seedSOUNDBETTER.SubIDs
@@ -20,12 +21,12 @@ realSubIDs = seedSOUNDBETTER.SubIDs
 
 #%% Gather data from clusters of electrodes, on specified blocks of trials
 
-def GatherData(SubID, channels_list, tmin, tmax, blocks):
+def GatherData(Epoch, channels_list, tmin, tmax, blocks):
     
     '''
     Parameters
     ----------
-    SubID : INT between 0 and 19.
+    Epoch : mne.Epoch object from one subject.
     channels_list : LIST of LIST of STRING, shape (nb_clusters)*(nb_channels).
     blocks : ARRAY of INT.
 
@@ -36,9 +37,7 @@ def GatherData(SubID, channels_list, tmin, tmax, blocks):
 
     '''
     
-    os.chdir(datapath + '/myEpochs_Active')
-    data_ref = 'Epoch_'+realSubIDs[SubID]+'-epo.fif'
-    myEpoch = mne.read_epochs(data_ref, preload=True)['blocknumber in '+str(list(blocks))]
+    myEpoch = Epoch['blocknumber in '+str(list(blocks))]
     myEpoch.crop(tmin=tmin,tmax=tmax)
     
     data = np.array([np.mean(myEpoch.copy().pick(clust_chan)._data.T,1) for clust_chan in channels_list]).T # shape (nb_trials)*(nb_times)*(nb_clusters)
@@ -160,7 +159,7 @@ def TestUnimodal(data, metadata, parameters):
 
 #%% CV on Unimodal model
 
-def CV5_Unimodal(SubIDs, channels_list, times='all', maxiter=1000):
+def CV5_Unimodal(SubIDs, channels_list, times='all', maxiter=300, redo=0):
     
     # create the training and testing blocks
     list_of_blocks_train = [np.linspace(5,20,16),
@@ -173,7 +172,7 @@ def CV5_Unimodal(SubIDs, channels_list, times='all', maxiter=1000):
     
     # set initial time values
     if times == 'all':
-        times = np.arange(-0.4,2.4,1250)
+        times = np.linspace(-0.3,1.8,53)
     
     # initialize global output
     AVGtestLL = []
@@ -181,60 +180,77 @@ def CV5_Unimodal(SubIDs, channels_list, times='all', maxiter=1000):
     # CV5 for each subject
     for SubID in SubIDs :
         
+        os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
+        if os.path.exists('Model2BMV_Twind_5cv_active_S'+realSubIDs[SubID]+'.mat')==1 and redo==0:
+            print('\n Sub'+realSubIDs[SubID]+' already done \n')
+            continue
+        
         print('\n Start S'+realSubIDs[SubID]+'... \n')
         
-        success_list, trainLL_list, testLL_list, AVGtestLL_list = [], [], [], []
+        # load epoch file
+        os.chdir(datapath + '/myEpochs_Active')
+        data_ref = 'Epoch_'+realSubIDs[SubID]+'-epo.fif'
+        Epoch = mne.read_epochs(data_ref, preload=True)
+        
+        # initialize outputs
+        success_list, trainLL_list, testLL_list, AVGtestLL_list, params_list = [], [], [], [], []
         
         # for each timepoint
         for t in times:
             
             print('\n S'+realSubIDs[SubID]+', '+str(t)+'s... \n')
             
-            success_list_this_time, trainLL_list_this_time, testLL_list_this_time = [], [], []
+            success_list_this_time, trainLL_list_this_time, testLL_list_this_time, params_list_this_time = [], [], [], []
             
             # for each fold
             for fold in range(5):
                 
-                print('\n Fold nb'+str(fold)+'... \n')
+                print('\n Fold nb'+str(fold)+'...')
                 
                 # train
-                data, metadata = GatherData(SubID, channels_list, 
-                                            tmin=t, tmax=t+0.015, 
+                start = time.time()
+                data, metadata = GatherData(Epoch.copy(), channels_list, 
+                                            tmin=t, tmax=t+0.03, 
                                             blocks=list_of_blocks_train[fold])
                 success, params, trainLL = FitUnimodal(data,metadata,maxiter=maxiter)
+                end = time.time()
+                print('Training complete ('+str(end-start)[:5]+'s)')
                 
                 # test
-                data, metadata = GatherData(SubID, channels_list, 
-                                            tmin=t, tmax=t+0.015, 
+                start = time.time()
+                data, metadata = GatherData(Epoch.copy(), channels_list, 
+                                            tmin=t, tmax=t+0.03, 
                                             blocks=list_of_blocks_test[fold])
                 testLL = TestUnimodal(data, metadata, params)
+                end = time.time()
+                print('Testing complete ('+str(end-start)[:5]+'s)')
                 
                 # store results for this fold
                 success_list_this_time.append(success)
                 trainLL_list_this_time.append(trainLL)
                 testLL_list_this_time.append(testLL)
+                params_list_this_time.append(params)
                 
             # store results for this timepoint
             success_list.append(success_list_this_time)
             trainLL_list.append(trainLL_list_this_time)
             testLL_list.append(testLL_list_this_time)
             AVGtestLL_list.append(np.mean(testLL_list_this_time))
+            params_list.append(params_list_this_time)
             
         # store results for this subject
         AVGtestLL.append(AVGtestLL_list)
-        if times == 'all':
+        if times == 'all' :
             os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
-            matfile = {'LLH':AVGtestLL_list, 'exitflags':success_list, 'trainLLH':trainLL, 'testLLH':testLL}
-            scipy.io.savemat('Model2BMV_Twind_5cv_active_filtered_10Hz_S'+realSubIDs[SubID]+'.mat', matfile)
-        
-    # store population avrage
-    AVGtestLL = np.array(AVGtestLL)
-    if times == 'all':
-        os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
-        matfile = {'LLH':np.mean(AVGtestLL,0)}
-        scipy.io.savemat('Model2BMV_LLH_active_all.mat', matfile)
+            matfile = {'LLH':AVGtestLL_list, 'exitflags':success_list, 'trainLLH':trainLL, 'testLLH':testLL,
+                       'channels_clusters':channels_list,'params':params_list}
+            scipy.io.savemat('Model2BMV_Twind_5cv_active_S'+realSubIDs[SubID]+'.mat', matfile)
         
     return(AVGtestLL)
+
+
+channels_list = [['F1','Fz','F2','FC1','FCz','FC2'],['C5','C3','C1','CP5','CP3','CP1'],
+                 ['C6','C4','C2','CP6','CP4','CP2'],['PO3','POz','PO4','O1','Oz','O2']]
     
     
     
