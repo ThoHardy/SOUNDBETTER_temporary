@@ -159,103 +159,6 @@ def TestUnimodal(data, metadata, parameters):
 
 
 
-#%% CV on Unimodal model
-
-def CV5_Unimodal(SubIDs, channels_list, times='all', maxiter=300, redo=0):
-    
-    # create the training and testing blocks
-    list_of_blocks_train = [np.linspace(5,20,16),
-                      np.concatenate((np.linspace(1,4,4),np.linspace(9,20,12))),
-                      np.concatenate((np.linspace(1,8,8),np.linspace(13,20,8))),
-                      np.concatenate((np.linspace(1,12,12),np.linspace(17,20,4))),
-                      np.linspace(1,16,16)]
-    list_of_blocks_test = [np.linspace(1,4,4),np.linspace(5,8,4),np.linspace(9,12,4),
-                           np.linspace(13,16,4),np.linspace(17,20,4)]
-    
-    # set initial time values
-    if times == 'all':
-        times = np.linspace(-0.3,1.8,53)
-    
-    # initialize global output
-    AVGtestLL = []
-    
-    # CV5 for each subject
-    for SubID in SubIDs :
-        
-        os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
-        if os.path.exists('Model2BMV_Twind_5cv_active_S'+realSubIDs[SubID]+'.mat')==1 and redo==0:
-            print('\n Sub'+realSubIDs[SubID]+' already done \n')
-            continue
-        
-        print('\n Start S'+realSubIDs[SubID]+'... \n')
-        
-        # load epoch file
-        os.chdir(datapath + '/myEpochs_Active')
-        data_ref = 'Epoch_'+realSubIDs[SubID]+'-epo.fif'
-        Epoch = mne.read_epochs(data_ref, preload=True)
-        
-        # initialize outputs
-        success_list, trainLL_list, testLL_list, AVGtestLL_list, params_list = [], [], [], [], []
-        
-        # for each timepoint
-        for t in times:
-            
-            print('\n S'+realSubIDs[SubID]+', '+str(t)+'s... \n')
-            
-            success_list_this_time, trainLL_list_this_time, testLL_list_this_time, params_list_this_time = [], [], [], []
-            
-            # for each fold
-            for fold in range(5):
-                
-                print('\n Fold nb'+str(fold)+'...')
-                
-                # train
-                start = time.time()
-                data, metadata = GatherData(Epoch.copy(), channels_list, 
-                                            tmin=t, tmax=t+0.03, 
-                                            blocks=list_of_blocks_train[fold])
-                success, params, trainLL = FitUnimodal(data,metadata,maxiter=maxiter)
-                end = time.time()
-                print('Training complete ('+str(end-start)[:5]+'s)')
-                print('Convergence :', success)
-                
-                if not(isinstance(params,np.ndarray)):
-                    print('ValueError during training !')
-                else : 
-                    # test
-                    start = time.time()
-                    data, metadata = GatherData(Epoch.copy(), channels_list, 
-                                                tmin=t, tmax=t+0.03, 
-                                                blocks=list_of_blocks_test[fold])
-                    testLL = TestUnimodal(data, metadata, params)
-                    end = time.time()
-                    print('Testing complete ('+str(end-start)[:5]+'s)')
-                
-                # store results for this fold
-                success_list_this_time.append(int(success))
-                trainLL_list_this_time.append(trainLL)
-                testLL_list_this_time.append(testLL)
-                params_list_this_time.append(params)
-                
-            # store results for this timepoint
-            success_list.append(success_list_this_time)
-            trainLL_list.append(trainLL_list_this_time)
-            testLL_list.append(testLL_list_this_time)
-            AVGtestLL_list.append(np.nanmean(testLL_list_this_time))
-            params_list.append(params_list_this_time)
-            
-        # store results for this subject
-        AVGtestLL.append(AVGtestLL_list)
-        if times == 'all' :
-            os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
-            matfile = {'LLH':AVGtestLL_list, 'exitflags':success_list, 'trainLLH':trainLL, 'testLLH':testLL,
-                       'channels_clusters':channels_list,'params':params_list}
-            scipy.io.savemat('Model2BMV_Twind_5cv_active_S'+realSubIDs[SubID]+'.mat', matfile)
-        
-    return(AVGtestLL)
-
-
-
 #%% Fit Bimodal model on (data, metadata)
 
 def FitBimodal(data,metadata,maxiter=1000):
@@ -365,9 +268,17 @@ def TestBimodal(data, metadata, parameters):
 
 
 
-#%% CV on Bimodal model
+#%% CV on any model
 
-def CV5_Bimodal(SubIDs, channels_list, times='all', maxiter=300, redo=0):
+def CV5(model, SubIDs, channels_list, times_array='all', maxiter=300, redo=0):
+    
+    # model <-> gather, fit and train functions
+    models2gather = {'7MV':GatherData,'2BMV':GatherData}
+    models2fit = {'7MV':FitBimodal,'2BMV':FitUnimodal}
+    models2test = {'7MV':TestBimodal,'2BMV':TestUnimodal}
+    if not(model in models2fit.keys()):
+        raise ValueError('"model" unknown')
+    Gather, Fit, Test = models2gather[model], models2fit[model], models2test[model]
     
     # create the training and testing blocks
     list_of_blocks_train = [np.linspace(5,20,16),
@@ -379,8 +290,10 @@ def CV5_Bimodal(SubIDs, channels_list, times='all', maxiter=300, redo=0):
                            np.linspace(13,16,4),np.linspace(17,20,4)]
     
     # set initial time values
-    if times == 'all':
+    if times_array == 'all':
         times = np.linspace(-0.3,1.8,53)
+    else :
+        times = times_array
     
     # initialize global output
     AVGtestLL = []
@@ -388,17 +301,19 @@ def CV5_Bimodal(SubIDs, channels_list, times='all', maxiter=300, redo=0):
     # CV5 for each subject
     for SubID in SubIDs :
         
+        # check if already done for this subject
         os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
-        if os.path.exists('Model7MV_Twind_5cv_active_S'+realSubIDs[SubID]+'.mat')==1 and redo==0:
+        if os.path.exists('Model'+model+'_Twind_5cv_active_S'+realSubIDs[SubID]+'.mat')==1 and redo==0:
             print('\n Sub'+realSubIDs[SubID]+' already done \n')
             continue
         
         print('\n Start S'+realSubIDs[SubID]+'... \n')
         
         # load epoch file
-        os.chdir(datapath + '/myEpochs_Active')
-        data_ref = 'Epoch_'+realSubIDs[SubID]+'-epo.fif'
-        Epoch = mne.read_epochs(data_ref, preload=True)
+        if model in ['2BMV','7MV']: # raw channels signal
+            os.chdir(datapath + '/myEpochs_Active')
+            data_ref = 'Epoch_'+realSubIDs[SubID]+'-epo.fif'
+            Epoch = mne.read_epochs(data_ref, preload=True)
         
         # initialize outputs
         success_list, trainLL_list, testLL_list, AVGtestLL_list, params_list = [], [], [], [], []
@@ -417,23 +332,23 @@ def CV5_Bimodal(SubIDs, channels_list, times='all', maxiter=300, redo=0):
                 
                 # train
                 start = time.time()
-                data, metadata = GatherData(Epoch.copy(), channels_list, 
+                data, metadata = Gather(Epoch.copy(), channels_list, 
                                             tmin=t, tmax=t+0.03, 
                                             blocks=list_of_blocks_train[fold])
-                success, params, trainLL = FitBimodal(data,metadata,maxiter=maxiter)
+                success, params, trainLL = Fit(data,metadata,maxiter=maxiter)
                 end = time.time()
                 print('Training complete ('+str(end-start)[:5]+'s)')
                 print('Convergence :', success)
                 
-                if not(isinstance(params,np.ndarray)):
+                # test
+                if not(isinstance(params,np.ndarray)): # if params if np.nan
                     print('ValueError during training !')
                 else : 
-                    # test
                     start = time.time()
-                    data, metadata = GatherData(Epoch.copy(), channels_list, 
+                    data, metadata = Gather(Epoch.copy(), channels_list, 
                                                 tmin=t, tmax=t+0.03, 
                                                 blocks=list_of_blocks_test[fold])
-                    testLL = TestBimodal(data, metadata, params)
+                    testLL = Test(data, metadata, params)
                     end = time.time()
                     print('Testing complete ('+str(end-start)[:5]+'s)')
                 
@@ -456,23 +371,20 @@ def CV5_Bimodal(SubIDs, channels_list, times='all', maxiter=300, redo=0):
             os.chdir(datapath+'/ModelComparisonResults_Twind30ms_Thomas')
             matfile = {'LLH':AVGtestLL_list, 'exitflags':success_list, 'trainLLH':trainLL, 'testLLH':testLL,
                        'channels_clusters':channels_list,'params':params_list}
-            scipy.io.savemat('Model7MV_Twind_5cv_active_S'+realSubIDs[SubID]+'.mat', matfile)
+            scipy.io.savemat('Model'+model+'_Twind_5cv_active_S'+realSubIDs[SubID]+'.mat', matfile)
         
     return(AVGtestLL)
 
 #%% Set some variables
 
-models2fit = {'7MV':FitBimodal,'2BMV':FitUnimodal}
-models2test = {'7MV':TestBimodal,'2BMV':TestUnimodal}
-
 SubIDs = range(20)
 
-channels_list = [['F1','Fz','F2','FC1','FCz','FC2'],['FT7','FT5','T7','T5','TP7','TP5'],
-                 ['FT8','FT6','T8','T6','TP8','TP6'],['PO3','POz','PO4','O1','Oz','O2']]
+channels_list = [['F1','Fz','F2','FC1','FCz','FC2'],['FT7','FC5','T7','C5','TP7','CP5'],
+                 ['FT8','FC6','T8','C6','TP8','CP6'],['PO3','POz','PO4','O1','Oz','O2']]
 
 #channels_list = [['F1','Fz','F2','FC1','FCz','FC2'],['C5','C3','C1','CP5','CP3','CP1'],
                  #['C6','C4','C2','CP6','CP4','CP2'],['PO3','POz','PO4','O1','Oz','O2']]
-    
+
     
     
     
